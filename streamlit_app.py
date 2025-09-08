@@ -220,10 +220,9 @@ if col_sb2.button("Sauvegarder maintenant"):
 # =========================
 # UI – TABS
 # =========================
-tab_dash, tab_move, tab_mo, tab_stock, tab_compos, tab_invent, tab_clients, tab_export, tab_tbl_moves, tab_tbl_mo = st.tabs([
-    "Dashboard","Mouvement simple","Ordre de fabrication","Stock",
-    "Composants","Inventaire","Clients","Export CSV",
-    "Tableau des mouvements","Tableau des OF"
+tab_dash, tab_moves, tab_mo, tab_stock, tab_compos, tab_invent, tab_clients, tab_export = st.tabs([
+    "Dashboard","Mouvements","Ordres de fabrication","Stock",
+    "Composants","Inventaire","Clients","Export CSV"
 ])
 
 # ---- DASHBOARD
@@ -241,18 +240,21 @@ with tab_dash:
     st.markdown("#### Sous le seuil (selon *ReorderPoint*)")
     st.dataframe(low if not low.empty else pd.DataFrame(columns=dfs["Stock"].columns), use_container_width=True)
 
-# ---- MOUVEMENT SIMPLE (sans client)
-with tab_move:
-    st.subheader("Saisir une entrée/sortie")
+# ---- MOUVEMENTS (form + filtres + tableau)
+with tab_moves:
+    st.header("Mouvements")
+
+    # --- Saisie d’un mouvement
+    st.subheader("Ajouter un mouvement")
     resp_list = dfs["Responsables"]["Responsable"].dropna().astype(str).tolist() or ["Aymane","Joslain","Lise","Robin"]
     with st.form("mv_form"):
         col_a, col_b = st.columns(2)
-        sku = col_a.selectbox("SKU", dfs["Stock"]["SKU"].astype(str).tolist())
-        responsable = col_b.selectbox("Responsable", resp_list, index=0)
-        move_type = st.radio("Type", ["IN","OUT"], horizontal=True)
-        qty = st.number_input("Quantité", min_value=0.0, step=1.0)
-        ref = st.text_input("Référence", value="MANUAL")
-        loc = st.text_input("Emplacement", value="ENTREPOT")
+        sku = col_a.selectbox("SKU", dfs["Stock"]["SKU"].astype(str).tolist(), key="mv_sku")
+        responsable = col_b.selectbox("Responsable", resp_list, index=0, key="mv_resp")
+        move_type = st.radio("Type", ["IN","OUT"], horizontal=True, key="mv_type")
+        qty = st.number_input("Quantité", min_value=0.0, step=1.0, key="mv_qty")
+        ref = st.text_input("Référence", value="MANUAL", key="mv_ref")
+        loc = st.text_input("Emplacement", value="ENTREPOT", key="mv_loc")
         submitted = st.form_submit_button("Enregistrer")
         if submitted:
             if qty <= 0:
@@ -268,30 +270,62 @@ with tab_move:
                 except PermissionError as e:
                     st.error(str(e))
 
-# ---- ORDRE DE FABRICATION (client ici)
+    st.divider()
+
+    # --- Filtres + tableau mouvements
+    st.subheader("Historique des mouvements")
+    mv = dfs["Mouvements"].copy()
+    mv["Date_dt"] = pd.to_datetime(mv["Date"], errors="coerce")
+    min_d = pd.to_datetime(mv["Date_dt"].min()).date() if not mv["Date_dt"].isna().all() else date.today() - timedelta(days=30)
+    max_d = pd.to_datetime(mv["Date_dt"].max()).date() if not mv["Date_dt"].isna().all() else date.today()
+
+    c1, c2, c3 = st.columns(3)
+    d_from = c1.date_input("Du", value=min_d, key="mv_from")
+    d_to   = c2.date_input("Au", value=max_d, key="mv_to")
+    types = c3.multiselect("Type", options=["IN","OUT"], default=["IN","OUT"], key="mv_types")
+
+    c4, c5 = st.columns(2)
+    sku_filter = c4.text_input("Filtre SKU (contient)", "", key="mv_sku_filter")
+    resp_opts = ["(Tous)"] + sorted(mv["Responsable"].dropna().astype(str).unique().tolist())
+    resp_pick = c5.selectbox("Responsable", resp_opts, index=0, key="mv_resp_filter")
+
+    mv_view = mv.drop(columns=["Date_dt"]).copy()
+    mask_date = (mv["Date_dt"].dt.date >= d_from) & (mv["Date_dt"].dt.date <= d_to)
+    mv_view = mv_view[mask_date]
+    mv_view = mv_view[mv["Type"].isin(types)]
+    if sku_filter.strip():
+        mv_view = mv_view[mv_view["SKU"].astype(str).str.contains(sku_filter, case=False, na=False)]
+    if resp_pick != "(Tous)":
+        mv_view = mv_view[mv_view["Responsable"].astype(str) == resp_pick]
+
+    st.dataframe(mv_view.sort_values("Date", ascending=False), use_container_width=True)
+
+# ---- ORDRES DE FABRICATION (vérif + création + filtres + tableau)
 with tab_mo:
-    st.subheader("Ordre de fabrication (GMQ ONE / GMQ LIVE)")
+    st.header("Ordres de fabrication")
+
+    # --- Création / Vérification
+    st.subheader("Créer un OF")
     resp_list = dfs["Responsables"]["Responsable"].dropna().astype(str).tolist() or ["Aymane","Joslain","Lise","Robin"]
     clients_list = dfs["Clients"]["ClientName"].dropna().astype(str).tolist()
 
     with st.form("mo_form"):
         col1, col2 = st.columns(2)
-        product = col1.selectbox("Produit fini", ["GMQ ONE","GMQ LIVE"])
-        responsable = col2.selectbox("Responsable", resp_list, index=0)
+        product = col1.selectbox("Produit fini", ["GMQ ONE","GMQ LIVE"], key="mo_product")
+        responsable = col2.selectbox("Responsable", resp_list, index=0, key="mo_resp")
 
         col3, col4, col5 = st.columns([1,1,2])
-        qty_make = col3.number_input("Quantité à produire", min_value=0.0, step=1.0)
-        due_date = col4.date_input("Date d'échéance", value=date.today() + timedelta(days=7))
-        ref = col5.text_input("Référence OF", value="OF-AUTO")
+        qty_make = col3.number_input("Quantité à produire", min_value=0.0, step=1.0, key="mo_qty")
+        due_date = col4.date_input("Date d'échéance", value=date.today() + timedelta(days=7), key="mo_due")
+        ref = col5.text_input("Référence OF", value="OF-AUTO", key="mo_ref")
 
-        # Sélection du client (ou saisie passage)
         st.markdown("**Client associé à l'OF**")
         colc1, colc2 = st.columns(2)
         client_pick = ["(aucun)"] + clients_list + ["Client de passage (saisie)"]
-        client_choice = colc1.selectbox("Client", client_pick, index=0)
+        client_choice = colc1.selectbox("Client", client_pick, index=0, key="mo_client_pick")
         client_free = None
         if client_choice == "Client de passage (saisie)":
-            client_free = colc2.text_input("Nom du client (passage)", value="")
+            client_free = colc2.text_input("Nom du client (passage)", value="", key="mo_client_free")
 
         cver, cpost = st.columns(2)
         verify_clicked = cver.form_submit_button("Vérifier l'OF")
@@ -314,10 +348,9 @@ with tab_mo:
 
                 if post_clicked and ok:
                     try:
-                        # Valeur Client à stocker dans Fabrications
                         client_final = None
                         if client_choice == "Client de passage (saisie)":
-                            client_final = client_free.strip() or None
+                            client_final = (client_free or "").strip() or None
                         elif client_choice not in ["(aucun)", "Client de passage (saisie)"]:
                             client_final = client_choice
 
@@ -354,17 +387,146 @@ with tab_mo:
                     except PermissionError as e:
                         st.error(str(e))
 
-# ---- STOCK (affichage)
-with tab_stock:
-    st.subheader("Table Stock (édition rapide – non persistée automatiquement)")
-    st.dataframe(dfs["Stock"], use_container_width=True)
-    st.markdown("#### Derniers mouvements")
-    st.dataframe(dfs["Mouvements"].tail(20), use_container_width=True)
+    st.divider()
 
-# ---- COMPOSANTS : recherche + ajout
+    # --- Filtres + tableau OF
+    st.subheader("Liste des ordres de fabrication")
+    fab = dfs["Fabrications"].copy()
+    fab["Date_dt"] = pd.to_datetime(fab["Date"], errors="coerce")
+    min_f = pd.to_datetime(fab["Date_dt"].min()).date() if not fab["Date_dt"].isna().all() else date.today() - timedelta(days=30)
+    max_f = pd.to_datetime(fab["Date_dt"].max()).date() if not fab["Date_dt"].isna().all() else date.today()
+
+    f1, f2, f3 = st.columns(3)
+    f_from = f1.date_input("Du", value=min_f, key="fab_from")
+    f_to   = f2.date_input("Au", value=max_f, key="fab_to")
+    prod_pick = f3.multiselect("Produit", options=["GMQ ONE","GMQ LIVE"], default=["GMQ ONE","GMQ LIVE"], key="fab_prod")
+
+    f4, f5 = st.columns(2)
+    status_opts = ["(Tous)"] + sorted(fab["Status"].dropna().astype(str).unique().tolist()) if "Status" in fab.columns else ["(Tous)"]
+    status_pick = f4.selectbox("Statut", status_opts, index=0, key="fab_status")
+    client_filter = f5.text_input("Client contient", "", key="fab_client_q")
+
+    fab_view = fab.drop(columns=["Date_dt"]).copy()
+    mask_fd = (fab["Date_dt"].dt.date >= f_from) & (fab["Date_dt"].dt.date <= f_to)
+    fab_view = fab_view[mask_fd]
+    fab_view = fab_view[fab_view["Product"].isin(prod_pick)]
+    if status_pick != "(Tous)" and "Status" in fab_view.columns:
+        fab_view = fab_view[fab_view["Status"].astype(str) == status_pick]
+    if client_filter.strip() and "Client" in fab_view.columns:
+        fab_view = fab_view[fab_view["Client"].astype(str).str.contains(client_filter, case=False, na=False)]
+
+    cols = [c for c in ["MO_ID","Date","DueDate","Product","Qty","Status","Ref","Responsable","Client"] if c in fab_view.columns]
+    st.dataframe(fab_view[cols].sort_values(["DueDate","Date"], ascending=[True, False]), use_container_width=True)
+
+# ---- STOCK (ajout + édition rapide + filtres + export)
+with tab_stock:
+    st.header("Stock")
+
+    # ----- Ajout d’article générique
+    st.subheader("Ajouter un article au stock")
+    with st.form("stock_add"):
+        c1, c2, c3 = st.columns(3)
+        sku_new = c1.text_input("SKU *", "", key="stock_sku_new")
+        name_new = c2.text_input("Nom *", "", key="stock_name_new")
+        unit_new = c3.text_input("Unité", value="pcs", key="stock_unit_new")
+        c4, c5, c6 = st.columns(3)
+        cat_new = c4.text_input("Catégorie", value="Component", key="stock_cat_new")
+        rop_new = c5.number_input("ReorderPoint", min_value=0.0, step=1.0, value=0.0, key="stock_rop_new")
+        qty_new = c6.number_input("QtyOnHand (initiale)", min_value=0.0, step=1.0, value=0.0, key="stock_qty_new")
+        desc_new = st.text_input("Description", "", key="stock_desc_new")
+        btn_add_stock = st.form_submit_button("Ajouter")
+
+        if btn_add_stock:
+            if not sku_new.strip() or not name_new.strip():
+                st.error("SKU et Nom sont obligatoires.")
+            elif sku_new in dfs["Stock"]["SKU"].astype(str).tolist():
+                st.error("Ce SKU existe déjà.")
+            else:
+                new_row = {
+                    "SKU": sku_new, "Name": name_new, "Unit": unit_new, "Category": cat_new,
+                    "ReorderPoint": float(rop_new), "QtyOnHand": float(qty_new), "Description": desc_new
+                }
+                dfs["Stock"] = pd.concat([dfs["Stock"], pd.DataFrame([new_row])], ignore_index=True)
+                # Met à jour l’index pour cohérence immédiate
+                stock_index = build_stock_index(dfs["Stock"])
+                if autosave:
+                    write_excel_to_path_atomic(dfs, excel_path)
+                st.success(f"Article {sku_new} ajouté.")
+                st.toast("Article ajouté")
+
+    st.divider()
+
+    # ----- Édition rapide (entière)
+    st.subheader("Édition rapide du stock")
+    edited_stock = st.data_editor(
+        dfs["Stock"],
+        use_container_width=True,
+        key="stock_editor",
+        num_rows="dynamic",
+        column_config={
+            "ReorderPoint": st.column_config.NumberColumn(step=1.0, min_value=0.0),
+            "QtyOnHand": st.column_config.NumberColumn(step=1.0, min_value=0.0)
+        }
+    )
+
+    if st.button("💾 Enregistrer modifications du stock", key="stock_save_btn"):
+        # On impose l’ordre/colonnes du schéma pour éviter toute dérive
+        cols = list(SCHEMA["Stock"].keys())
+        missing = [c for c in cols if c not in edited_stock.columns]
+        for c in missing:
+            edited_stock[c] = np.nan if c in ["ReorderPoint","QtyOnHand"] else None
+        edited_stock = edited_stock[cols].copy()
+        # Types
+        edited_stock["ReorderPoint"] = pd.to_numeric(edited_stock["ReorderPoint"], errors="coerce").astype("float64")
+        edited_stock["QtyOnHand"] = pd.to_numeric(edited_stock["QtyOnHand"], errors="coerce").astype("float64")
+        for c in ["SKU","Name","Unit","Category","Description"]:
+            edited_stock[c] = edited_stock[c].astype("object")
+
+        dfs["Stock"] = edited_stock.reset_index(drop=True)
+        stock_index = build_stock_index(dfs["Stock"])
+        if autosave:
+            write_excel_to_path_atomic(dfs, excel_path)
+        st.success("Modifications du stock enregistrées.")
+        st.toast("Stock enregistré")
+
+    st.divider()
+
+    # ----- Filtres + export pour visualisation
+    st.subheader("Recherche & Export du stock")
+    s1, s2, s3 = st.columns([1,1,2])
+    # Catégories (nettoyage NaN)
+    categories = sorted([c for c in dfs["Stock"]["Category"].dropna().astype(str).unique().tolist()])
+    cat_pick = s1.multiselect("Catégories", options=categories, default=[], key="stock_cat_filter")
+    only_low = s2.checkbox("Sous seuil uniquement", value=False, key="stock_low_filter")
+    q_stock = s3.text_input("Recherche (SKU / Nom / Description)", "", key="stock_search")
+
+    stock_view = dfs["Stock"].copy()
+    if cat_pick:
+        stock_view = stock_view[stock_view["Category"].astype(str).isin(cat_pick)]
+    if only_low and "ReorderPoint" in stock_view.columns:
+        stock_view = stock_view[ stock_view["QtyOnHand"] < stock_view["ReorderPoint"] ]
+    if q_stock.strip():
+        mask = (
+            stock_view["SKU"].astype(str).str.contains(q_stock, case=False, na=False) |
+            stock_view["Name"].astype(str).str.contains(q_stock, case=False, na=False) |
+            stock_view["Description"].astype(str).str.contains(q_stock, case=False, na=False)
+        )
+        stock_view = stock_view[mask]
+
+    st.dataframe(stock_view, use_container_width=True)
+
+    st.download_button(
+        "⬇️ Télécharger le stock filtré (CSV)",
+        data=to_csv_bytes(stock_view),
+        file_name=f"stock_filtre_{datetime.now():%Y%m%d_%H%M%S}.csv",
+        mime="text/csv",
+        key="stock_export_btn"
+    )
+
+# ---- COMPOSANTS : recherche + ajout (reste utile pour vue ciblée)
 with tab_compos:
     st.subheader("Recherche de composants")
-    q = st.text_input("Recherche (SKU / Nom / Description)", "")
+    q = st.text_input("Recherche (SKU / Nom / Description)", "", key="comp_q")
     comp_df = dfs["Stock"][ dfs["Stock"]["Category"].astype(str).str.lower().eq("component") ].copy()
     if q.strip():
         mask = (
@@ -378,14 +540,14 @@ with tab_compos:
     st.markdown("### Ajouter un nouveau composant")
     with st.form("add_component"):
         c1, c2, c3 = st.columns(3)
-        sku_new = c1.text_input("SKU *", "")
-        name_new = c2.text_input("Nom *", "")
-        unit_new = c3.text_input("Unité", value="pcs")
+        sku_new = c1.text_input("SKU *", "", key="comp_sku_new")
+        name_new = c2.text_input("Nom *", "", key="comp_name_new")
+        unit_new = c3.text_input("Unité", value="pcs", key="comp_unit_new")
         c4, c5, c6 = st.columns(3)
-        cat_new = c4.text_input("Catégorie", value="Component")
-        rop_new = c5.number_input("ReorderPoint", min_value=0.0, step=1.0, value=0.0)
-        qty_new = c6.number_input("QtyOnHand (initiale)", min_value=0.0, step=1.0, value=0.0)
-        desc_new = st.text_input("Description", "")
+        cat_new = c4.text_input("Catégorie", value="Component", key="comp_cat_new")
+        rop_new = c5.number_input("ReorderPoint", min_value=0.0, step=1.0, value=0.0, key="comp_rop_new")
+        qty_new = c6.number_input("QtyOnHand (initiale)", min_value=0.0, step=1.0, value=0.0, key="comp_qty_new")
+        desc_new = st.text_input("Description", "", key="comp_desc_new")
         btn_add = st.form_submit_button("Ajouter")
 
         if btn_add:
@@ -399,7 +561,6 @@ with tab_compos:
                     "ReorderPoint": float(rop_new), "QtyOnHand": float(qty_new), "Description": desc_new
                 }
                 dfs["Stock"] = pd.concat([dfs["Stock"], pd.DataFrame([new_row])], ignore_index=True)
-                # Rebuild index et autosave
                 stock_index = build_stock_index(dfs["Stock"])
                 if autosave:
                     write_excel_to_path_atomic(dfs, excel_path)
@@ -409,8 +570,8 @@ with tab_compos:
 with tab_invent:
     st.subheader("Inventaire (comptage & écarts)")
     resp_list = dfs["Responsables"]["Responsable"].dropna().astype(str).tolist() or ["Aymane","Joslain","Lise","Robin"]
-    responsable_inv = st.selectbox("Responsable inventaire", resp_list, index=0)
-    ref_inv = st.text_input("Référence d'inventaire", value=f"INV-{datetime.now():%Y%m%d}")
+    responsable_inv = st.selectbox("Responsable inventaire", resp_list, index=0, key="inv_resp")
+    ref_inv = st.text_input("Référence d'inventaire", value=f"INV-{datetime.now():%Y%m%d}", key="inv_ref")
 
     st.markdown("**Saisir le comptage** (SKU + quantité comptée) – lignes dynamiques")
     template = pd.DataFrame({"SKU": [], "Compté": []})
@@ -421,12 +582,13 @@ with tab_invent:
         column_config={
             "SKU": st.column_config.SelectboxColumn(options=dfs["Stock"]["SKU"].astype(str).tolist()),
             "Compté": st.column_config.NumberColumn(min_value=0.0, step=1.0)
-        }
+        },
+        key="inv_editor"
     )
 
     c1, c2 = st.columns(2)
-    calc = c1.button("Calculer les écarts")
-    valider = c2.button("Valider ajustements")
+    calc = c1.button("Calculer les écarts", key="inv_calc")
+    valider = c2.button("Valider ajustements", key="inv_valid")
 
     def _compute_diffs(ed: pd.DataFrame) -> pd.DataFrame:
         if ed is None or ed.empty:
@@ -475,12 +637,12 @@ with tab_clients:
     st.markdown("### Ajouter un client")
     with st.form("add_client"):
         c1, c2 = st.columns(2)
-        cname = c1.text_input("Nom du client *", "")
-        ctype = c2.selectbox("Type", ["Régulier","Passage"])
+        cname = c1.text_input("Nom du client *", "", key="cli_name")
+        ctype = c2.selectbox("Type", ["Régulier","Passage"], key="cli_type")
         c3, c4, c5 = st.columns(3)
-        cphone = c3.text_input("Téléphone", "")
-        cemail = c4.text_input("Email", "")
-        cnotes = c5.text_input("Notes", "")
+        cphone = c3.text_input("Téléphone", "", key="cli_phone")
+        cemail = c4.text_input("Email", "", key="cli_email")
+        cnotes = c5.text_input("Notes", "", key="cli_notes")
         btn_cli = st.form_submit_button("Ajouter")
 
         if btn_cli:
@@ -513,32 +675,29 @@ with tab_clients:
         )
         cl = cl[m]
 
-    # Sélection des clients à supprimer
     st.dataframe(cl, use_container_width=True)
     del_ids = st.multiselect(
         "Sélectionne les clients à supprimer",
         options=cl["ClientID"].astype(str).tolist(),
-        format_func=lambda cid: f"{cid} – {cl.loc[cl['ClientID']==cid,'ClientName'].values[0] if (cl['ClientID']==cid).any() else cid}"
+        format_func=lambda cid: f"{cid} – {cl.loc[cl['ClientID']==cid,'ClientName'].values[0] if (cl['ClientID']==cid).any() else cid}",
+        key="cli_del_ids"
     )
-    if st.button("🗑️ Supprimer la sélection"):
+    if st.button("🗑️ Supprimer la sélection", key="cli_del_btn"):
         if not del_ids:
             st.info("Aucun client sélectionné.")
         else:
-            # Avertir si des OF référencent ces noms (on ne bloque pas, on informe)
             used = dfs["Fabrications"]["Client"].dropna().astype(str)
             names_to_del = dfs["Clients"].loc[dfs["Clients"]["ClientID"].isin(del_ids),"ClientName"].astype(str).tolist()
             referenced = [n for n in names_to_del if n in set(used)]
             if referenced:
                 st.warning("Attention : des ordres de fabrication référencent ces clients : " + ", ".join(referenced))
-            # Suppression
             before = len(dfs["Clients"])
             dfs["Clients"] = dfs["Clients"][~dfs["Clients"]["ClientID"].isin(del_ids)].reset_index(drop=True)
-            after = len(dfs["Clients"])
             if autosave:
                 write_excel_to_path_atomic(dfs, excel_path)
-            st.success(f"Suppression effectuée ({before - after} client(s)).")
+            st.success(f"Suppression effectuée ({before - len(dfs['Clients'])} client(s)).")
 
-# ---- EXPORT CSV (filtres pertinents)
+# ---- EXPORT CSV (global, pour convenance)
 with tab_export:
     st.subheader("Exports CSV")
 
@@ -546,8 +705,8 @@ with tab_export:
     st.markdown("### Export Stock")
     col_s1, col_s2 = st.columns(2)
     cats = ["(Toutes)"] + sorted([c for c in dfs["Stock"]["Category"].dropna().astype(str).unique().tolist()])
-    cat_pick = col_s1.selectbox("Catégorie", cats, index=0)
-    only_low = col_s2.checkbox("Seulement sous seuil", value=False)
+    cat_pick = col_s1.selectbox("Catégorie", cats, index=0, key="exp_stock_cat")
+    only_low = col_s2.checkbox("Seulement sous seuil", value=False, key="exp_stock_low")
 
     stock_exp = dfs["Stock"].copy()
     if cat_pick != "(Toutes)":
@@ -558,7 +717,8 @@ with tab_export:
         "⬇️ Télécharger Stock filtré (CSV)",
         data=to_csv_bytes(stock_exp),
         file_name=f"stock_{datetime.now():%Y%m%d_%H%M%S}.csv",
-        mime="text/csv"
+        mime="text/csv",
+        key="exp_stock_btn"
     )
 
     st.divider()
@@ -571,25 +731,21 @@ with tab_export:
     max_d = pd.to_datetime(mv["Date_dt"].max()).date() if not mv["Date_dt"].isna().all() else date.today()
 
     c1, c2, c3 = st.columns(3)
-    d_from = c1.date_input("Du", value=min_d)
-    d_to   = c2.date_input("Au", value=max_d)
-    types = c3.multiselect("Type", options=["IN","OUT"], default=["IN","OUT"])
+    d_from = c1.date_input("Du", value=min_d, key="exp_mv_from")
+    d_to   = c2.date_input("Au", value=max_d, key="exp_mv_to")
+    types = c3.multiselect("Type", options=["IN","OUT"], default=["IN","OUT"], key="exp_mv_types")
 
     c4, c5 = st.columns(2)
-    sku_filter = c4.text_input("Filtre SKU (contient)", "")
+    sku_filter = c4.text_input("Filtre SKU (contient)", "", key="exp_mv_sku")
     resp_opts = ["(Tous)"] + sorted(mv["Responsable"].dropna().astype(str).unique().tolist())
-    resp_pick = c5.selectbox("Responsable", resp_opts, index=0)
+    resp_pick = c5.selectbox("Responsable", resp_opts, index=0, key="exp_mv_resp")
 
     mv_exp = mv.drop(columns=["Date_dt"]).copy()
-    # Date range
     mask_date = (mv["Date_dt"].dt.date >= d_from) & (mv["Date_dt"].dt.date <= d_to)
     mv_exp = mv_exp[mask_date]
-    # Type
     mv_exp = mv_exp[mv["Type"].isin(types)]
-    # SKU contains
     if sku_filter.strip():
         mv_exp = mv_exp[mv_exp["SKU"].astype(str).str.contains(sku_filter, case=False, na=False)]
-    # Responsable
     if resp_pick != "(Tous)":
         mv_exp = mv_exp[mv_exp["Responsable"].astype(str) == resp_pick]
 
@@ -597,7 +753,8 @@ with tab_export:
         "⬇️ Télécharger Mouvements filtrés (CSV)",
         data=to_csv_bytes(mv_exp),
         file_name=f"mouvements_{datetime.now():%Y%m%d_%H%M%S}.csv",
-        mime="text/csv"
+        mime="text/csv",
+        key="exp_mv_btn"
     )
 
     st.divider()
@@ -610,14 +767,14 @@ with tab_export:
     max_f = pd.to_datetime(fab["Date_dt"].max()).date() if not fab["Date_dt"].isna().all() else date.today()
 
     f1, f2, f3 = st.columns(3)
-    f_from = f1.date_input("Du", value=min_f, key="fab_from")
-    f_to   = f2.date_input("Au", value=max_f, key="fab_to")
-    prod_pick = f3.multiselect("Produit", options=["GMQ ONE","GMQ LIVE"], default=["GMQ ONE","GMQ LIVE"])
+    f_from = f1.date_input("Du", value=min_f, key="exp_fab_from")
+    f_to   = f2.date_input("Au", value=max_f, key="exp_fab_to")
+    prod_pick = f3.multiselect("Produit", options=["GMQ ONE","GMQ LIVE"], default=["GMQ ONE","GMQ LIVE"], key="exp_fab_prod")
 
     f4, f5 = st.columns(2)
     status_opts = ["(Tous)"] + sorted(fab["Status"].dropna().astype(str).unique().tolist()) if "Status" in fab.columns else ["(Tous)"]
-    status_pick = f4.selectbox("Statut", status_opts, index=0)
-    client_filter = f5.text_input("Client contient", "")
+    status_pick = f4.selectbox("Statut", status_opts, index=0, key="exp_fab_status")
+    client_filter = f5.text_input("Client contient", "", key="exp_fab_client")
 
     fab_exp = fab.drop(columns=["Date_dt"]).copy()
     mask_fd = (fab["Date_dt"].dt.date >= f_from) & (fab["Date_dt"].dt.date <= f_to)
@@ -632,48 +789,6 @@ with tab_export:
         "⬇️ Télécharger Fabrications filtrées (CSV)",
         data=to_csv_bytes(fab_exp),
         file_name=f"fabrications_{datetime.now():%Y%m%d_%H%M%S}.csv",
-        mime="text/csv"
+        mime="text/csv",
+        key="exp_fab_btn"
     )
-
-    st.divider()
-
-    # --- Export CLIENTS
-    st.markdown("### Export Clients")
-    c_q = st.text_input("Filtre (nom/email/téléphone)", "", key="exp_clients_q")
-    clients_exp = dfs["Clients"].copy()
-    if c_q.strip():
-        m = (
-            clients_exp["ClientName"].astype(str).str.contains(c_q, case=False, na=False) |
-            clients_exp["Phone"].astype(str).str.contains(c_q, case=False, na=False) |
-            clients_exp["Email"].astype(str).str.contains(c_q, case=False, na=False)
-        )
-        clients_exp = clients_exp[m]
-    st.download_button(
-        "⬇️ Télécharger Clients filtrés (CSV)",
-        data=to_csv_bytes(clients_exp),
-        file_name=f"clients_{datetime.now():%Y%m%d_%H%M%S}.csv",
-        mime="text/csv"
-    )
-
-# ---- TABLEAUX COMPLETS
-with tab_tbl_moves:
-    st.subheader("Tableau complet des mouvements")
-    st.dataframe(dfs["Mouvements"], use_container_width=True)
-
-with tab_tbl_mo:
-    st.subheader("Tableau des ordres de fabrication")
-    cols = [c for c in ["MO_ID","Date","DueDate","Product","Qty","Status","Ref","Responsable","Client"] if c in dfs["Fabrications"].columns]
-    df_mo = dfs["Fabrications"][cols] if cols else dfs["Fabrications"]
-    if "DueDate" in df_mo.columns:
-        df_mo = df_mo.copy()
-        df_mo["DueDate"] = pd.to_datetime(df_mo["DueDate"], errors="coerce")
-        df_mo.sort_values(["DueDate","Date"], inplace=True)
-    st.dataframe(df_mo, use_container_width=True)
-
-st.markdown("---")
-if st.button("Sauvegarder maintenant (forcer l'écriture)"):
-    try:
-        write_excel_to_path_atomic(dfs, excel_path)
-        st.success("Fichier sauvegardé")
-    except PermissionError as e:
-        st.error(str(e))
