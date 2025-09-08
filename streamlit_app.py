@@ -11,7 +11,7 @@ import streamlit as st
 # =========================
 # CONFIG
 # =========================
-DEFAULT_EXCEL_PATH = r"C:\Users\AymaneElMouhafid\Downloads\streamlit_excel_inventory\inventory.xlsx"
+DEFAULT_EXCEL_PATH = os.getenv("INVENTORY_XLSX", "inventory.xlsx")
 REQUIRED_SHEETS = ["Stock","Mouvements","Fabrications","BOM_GMQ_ONE","BOM_GMQ_LIVE"]
 OPTIONAL_SHEETS = ["Responsables","Clients"]  # créées si manquantes
 
