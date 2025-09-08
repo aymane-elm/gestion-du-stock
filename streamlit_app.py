@@ -26,13 +26,13 @@ SCHEMA: Dict[str, Dict[str, object]] = {
         "SKU": "object", "Name": "object", "Unit": "object", "Category": "object",
         "ReorderPoint": "float64", "QtyOnHand": "float64", "Description": "object"
     },
-    # ⚠️ Client retiré de Mouvements
+    # Client retiré de Mouvements
     "Mouvements": {
         "Date": "object", "SKU": "object", "Type": "object", "Qty": "float64",
         "Ref": "object", "Location": "object", "MO_ID": "object",
         "Responsable": "object"
     },
-    # ⚠️ Client ajouté dans Fabrications
+    # Client ajouté dans Fabrications
     "Fabrications": {
         "MO_ID": "object", "Date": "object", "DueDate": "object", "Product": "object",
         "Qty": "float64", "Status": "object", "Ref": "object",
@@ -75,14 +75,13 @@ def read_excel_from_path(path: str) -> Dict[str, pd.DataFrame]:
         dfs["Clients"] = pd.DataFrame({
             "ClientID": [], "ClientName": [], "Type": [], "Phone": [], "Email": [], "Notes": []
         })
-    # Assurer schémas + types (normalisation stricte : colonnes en trop supprimées)
+    # Normalisation stricte selon SCHEMA
     for name, schema in SCHEMA.items():
         df = dfs.get(name, pd.DataFrame())
         for col, dtype in schema.items():
             if col not in df.columns:
                 df[col] = np.nan if dtype != "object" else None
-        # garde l'ordre + retire colonnes non prévues par le schéma
-        df = df[[c for c in schema.keys()]]
+        df = df[[c for c in schema.keys()]]  # ordre + supprime colonnes inconnues
         for col, dtype in schema.items():
             if dtype == "float64":
                 df[col] = pd.to_numeric(df[col], errors="coerce").astype("float64")
@@ -134,7 +133,6 @@ def apply_movement(stock: pd.DataFrame, stock_idx: Dict[str, int], sku: str, qty
     stock.at[i, "QtyOnHand"] = new_val
     return stock, new_val
 
-# ⚠️ on retire le paramètre client
 def record_move(movements: pd.DataFrame, sku: str, move_type: str, qty: float,
                 ref: str, location: str, mo_id: str | None, responsable: str | None) -> pd.DataFrame:
     row = {
@@ -170,6 +168,9 @@ def check_availability(dfs: Dict[str, pd.DataFrame], product: str, qty_make: flo
     ok = float(df_req["Manque"].sum()) == 0.0
     df_req = df_req.sort_values(["Manque","ComponentSKU"], ascending=[False,True]).reset_index(drop=True)
     return df_req, ok
+
+def to_csv_bytes(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False).encode("utf-8-sig")
 
 # =========================
 # SIDEBAR / CHARGEMENT
@@ -219,9 +220,9 @@ if col_sb2.button("Sauvegarder maintenant"):
 # =========================
 # UI – TABS
 # =========================
-tab_dash, tab_move, tab_mo, tab_stock, tab_compos, tab_invent, tab_clients, tab_tbl_moves, tab_tbl_mo = st.tabs([
+tab_dash, tab_move, tab_mo, tab_stock, tab_compos, tab_invent, tab_clients, tab_export, tab_tbl_moves, tab_tbl_mo = st.tabs([
     "Dashboard","Mouvement simple","Ordre de fabrication","Stock",
-    "Composants","Inventaire","Clients",
+    "Composants","Inventaire","Clients","Export CSV",
     "Tableau des mouvements","Tableau des OF"
 ])
 
@@ -313,7 +314,7 @@ with tab_mo:
 
                 if post_clicked and ok:
                     try:
-                        # Détermine la valeur Client à stocker dans Fabrications
+                        # Valeur Client à stocker dans Fabrications
                         client_final = None
                         if client_choice == "Client de passage (saisie)":
                             client_final = client_free.strip() or None
@@ -467,7 +468,7 @@ with tab_invent:
             except PermissionError as e:
                 st.error(str(e))
 
-# ---- CLIENTS : recherche + ajout
+# ---- CLIENTS : ajout + suppression
 with tab_clients:
     st.subheader("Clients")
 
@@ -501,6 +502,7 @@ with tab_clients:
                 st.success(f"Client « {cname.strip()} » ajouté.")
                 st.toast("Client ajouté")
 
+    st.markdown("### Rechercher / Supprimer des clients")
     cq = st.text_input("Recherche client (nom, téléphone, email)", "", key="clients_search")
     cl = dfs["Clients"].copy()
     if cq.strip():
@@ -510,8 +512,148 @@ with tab_clients:
             cl["Email"].astype(str).str.contains(cq, case=False, na=False)
         )
         cl = cl[m]
-    st.markdown("### Liste des clients")
+
+    # Sélection des clients à supprimer
     st.dataframe(cl, use_container_width=True)
+    del_ids = st.multiselect(
+        "Sélectionne les clients à supprimer",
+        options=cl["ClientID"].astype(str).tolist(),
+        format_func=lambda cid: f"{cid} – {cl.loc[cl['ClientID']==cid,'ClientName'].values[0] if (cl['ClientID']==cid).any() else cid}"
+    )
+    if st.button("🗑️ Supprimer la sélection"):
+        if not del_ids:
+            st.info("Aucun client sélectionné.")
+        else:
+            # Avertir si des OF référencent ces noms (on ne bloque pas, on informe)
+            used = dfs["Fabrications"]["Client"].dropna().astype(str)
+            names_to_del = dfs["Clients"].loc[dfs["Clients"]["ClientID"].isin(del_ids),"ClientName"].astype(str).tolist()
+            referenced = [n for n in names_to_del if n in set(used)]
+            if referenced:
+                st.warning("Attention : des ordres de fabrication référencent ces clients : " + ", ".join(referenced))
+            # Suppression
+            before = len(dfs["Clients"])
+            dfs["Clients"] = dfs["Clients"][~dfs["Clients"]["ClientID"].isin(del_ids)].reset_index(drop=True)
+            after = len(dfs["Clients"])
+            if autosave:
+                write_excel_to_path_atomic(dfs, excel_path)
+            st.success(f"Suppression effectuée ({before - after} client(s)).")
+
+# ---- EXPORT CSV (filtres pertinents)
+with tab_export:
+    st.subheader("Exports CSV")
+
+    # --- Export STOCK
+    st.markdown("### Export Stock")
+    col_s1, col_s2 = st.columns(2)
+    cats = ["(Toutes)"] + sorted([c for c in dfs["Stock"]["Category"].dropna().astype(str).unique().tolist()])
+    cat_pick = col_s1.selectbox("Catégorie", cats, index=0)
+    only_low = col_s2.checkbox("Seulement sous seuil", value=False)
+
+    stock_exp = dfs["Stock"].copy()
+    if cat_pick != "(Toutes)":
+        stock_exp = stock_exp[ stock_exp["Category"].astype(str) == cat_pick ]
+    if only_low and "ReorderPoint" in stock_exp.columns:
+        stock_exp = stock_exp[ stock_exp["QtyOnHand"] < stock_exp["ReorderPoint"] ]
+    st.download_button(
+        "⬇️ Télécharger Stock filtré (CSV)",
+        data=to_csv_bytes(stock_exp),
+        file_name=f"stock_{datetime.now():%Y%m%d_%H%M%S}.csv",
+        mime="text/csv"
+    )
+
+    st.divider()
+
+    # --- Export MOUVEMENTS
+    st.markdown("### Export Mouvements")
+    mv = dfs["Mouvements"].copy()
+    mv["Date_dt"] = pd.to_datetime(mv["Date"], errors="coerce")
+    min_d = pd.to_datetime(mv["Date_dt"].min()).date() if not mv["Date_dt"].isna().all() else date.today() - timedelta(days=30)
+    max_d = pd.to_datetime(mv["Date_dt"].max()).date() if not mv["Date_dt"].isna().all() else date.today()
+
+    c1, c2, c3 = st.columns(3)
+    d_from = c1.date_input("Du", value=min_d)
+    d_to   = c2.date_input("Au", value=max_d)
+    types = c3.multiselect("Type", options=["IN","OUT"], default=["IN","OUT"])
+
+    c4, c5 = st.columns(2)
+    sku_filter = c4.text_input("Filtre SKU (contient)", "")
+    resp_opts = ["(Tous)"] + sorted(mv["Responsable"].dropna().astype(str).unique().tolist())
+    resp_pick = c5.selectbox("Responsable", resp_opts, index=0)
+
+    mv_exp = mv.drop(columns=["Date_dt"]).copy()
+    # Date range
+    mask_date = (mv["Date_dt"].dt.date >= d_from) & (mv["Date_dt"].dt.date <= d_to)
+    mv_exp = mv_exp[mask_date]
+    # Type
+    mv_exp = mv_exp[mv["Type"].isin(types)]
+    # SKU contains
+    if sku_filter.strip():
+        mv_exp = mv_exp[mv_exp["SKU"].astype(str).str.contains(sku_filter, case=False, na=False)]
+    # Responsable
+    if resp_pick != "(Tous)":
+        mv_exp = mv_exp[mv_exp["Responsable"].astype(str) == resp_pick]
+
+    st.download_button(
+        "⬇️ Télécharger Mouvements filtrés (CSV)",
+        data=to_csv_bytes(mv_exp),
+        file_name=f"mouvements_{datetime.now():%Y%m%d_%H%M%S}.csv",
+        mime="text/csv"
+    )
+
+    st.divider()
+
+    # --- Export FABRICATIONS
+    st.markdown("### Export Fabrications")
+    fab = dfs["Fabrications"].copy()
+    fab["Date_dt"] = pd.to_datetime(fab["Date"], errors="coerce")
+    min_f = pd.to_datetime(fab["Date_dt"].min()).date() if not fab["Date_dt"].isna().all() else date.today() - timedelta(days=30)
+    max_f = pd.to_datetime(fab["Date_dt"].max()).date() if not fab["Date_dt"].isna().all() else date.today()
+
+    f1, f2, f3 = st.columns(3)
+    f_from = f1.date_input("Du", value=min_f, key="fab_from")
+    f_to   = f2.date_input("Au", value=max_f, key="fab_to")
+    prod_pick = f3.multiselect("Produit", options=["GMQ ONE","GMQ LIVE"], default=["GMQ ONE","GMQ LIVE"])
+
+    f4, f5 = st.columns(2)
+    status_opts = ["(Tous)"] + sorted(fab["Status"].dropna().astype(str).unique().tolist()) if "Status" in fab.columns else ["(Tous)"]
+    status_pick = f4.selectbox("Statut", status_opts, index=0)
+    client_filter = f5.text_input("Client contient", "")
+
+    fab_exp = fab.drop(columns=["Date_dt"]).copy()
+    mask_fd = (fab["Date_dt"].dt.date >= f_from) & (fab["Date_dt"].dt.date <= f_to)
+    fab_exp = fab_exp[mask_fd]
+    fab_exp = fab_exp[fab_exp["Product"].isin(prod_pick)]
+    if status_pick != "(Tous)" and "Status" in fab_exp.columns:
+        fab_exp = fab_exp[fab_exp["Status"].astype(str) == status_pick]
+    if client_filter.strip() and "Client" in fab_exp.columns:
+        fab_exp = fab_exp[fab_exp["Client"].astype(str).str.contains(client_filter, case=False, na=False)]
+
+    st.download_button(
+        "⬇️ Télécharger Fabrications filtrées (CSV)",
+        data=to_csv_bytes(fab_exp),
+        file_name=f"fabrications_{datetime.now():%Y%m%d_%H%M%S}.csv",
+        mime="text/csv"
+    )
+
+    st.divider()
+
+    # --- Export CLIENTS
+    st.markdown("### Export Clients")
+    c_q = st.text_input("Filtre (nom/email/téléphone)", "", key="exp_clients_q")
+    clients_exp = dfs["Clients"].copy()
+    if c_q.strip():
+        m = (
+            clients_exp["ClientName"].astype(str).str.contains(c_q, case=False, na=False) |
+            clients_exp["Phone"].astype(str).str.contains(c_q, case=False, na=False) |
+            clients_exp["Email"].astype(str).str.contains(c_q, case=False, na=False)
+        )
+        clients_exp = clients_exp[m]
+    st.download_button(
+        "⬇️ Télécharger Clients filtrés (CSV)",
+        data=to_csv_bytes(clients_exp),
+        file_name=f"clients_{datetime.now():%Y%m%d_%H%M%S}.csv",
+        mime="text/csv"
+    )
 
 # ---- TABLEAUX COMPLETS
 with tab_tbl_moves:
