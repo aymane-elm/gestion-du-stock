@@ -26,93 +26,10 @@ def get_engine() -> Engine:
 
 engine = get_engine()
 
-DDL_STATEMENTS = [
-    # Stock
-    """
-    CREATE TABLE IF NOT EXISTS stock (
-        sku TEXT PRIMARY KEY,
-        name TEXT,
-        unit TEXT,
-        category TEXT,
-        reorder_point NUMERIC,
-        qty_on_hand NUMERIC DEFAULT 0,
-        description TEXT
-    );
-    """,
-    # Mouvements
-    """
-    CREATE TABLE IF NOT EXISTS mouvements (
-        id BIGSERIAL PRIMARY KEY,
-        date TIMESTAMPTZ NOT NULL DEFAULT now(),
-        sku TEXT NOT NULL REFERENCES stock(sku) ON UPDATE CASCADE ON DELETE RESTRICT,
-        type TEXT CHECK (type IN ('IN','OUT')) NOT NULL,
-        qty NUMERIC NOT NULL CHECK (qty >= 0),
-        ref TEXT,
-        location TEXT,
-        mo_id TEXT,
-        responsable TEXT
-    );
-    """,
-    # Fabrications (client stocké ici)
-    """
-    CREATE TABLE IF NOT EXISTS fabrications (
-        mo_id TEXT PRIMARY KEY,
-        date TIMESTAMPTZ NOT NULL DEFAULT now(),
-        due_date DATE,
-        product TEXT NOT NULL CHECK (product IN ('GMQ ONE','GMQ LIVE')),
-        qty NUMERIC NOT NULL CHECK (qty >= 0),
-        status TEXT,
-        ref TEXT,
-        responsable TEXT,
-        client TEXT
-    );
-    """,
-    # BOMs
-    """
-    CREATE TABLE IF NOT EXISTS bom_gmq_one (
-        component_sku TEXT NOT NULL,
-        qty_per_unit NUMERIC NOT NULL CHECK (qty_per_unit >= 0),
-        description TEXT,
-        PRIMARY KEY(component_sku),
-        FOREIGN KEY (component_sku) REFERENCES stock(sku) ON UPDATE CASCADE ON DELETE RESTRICT
-    );
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS bom_gmq_live (
-        component_sku TEXT NOT NULL,
-        qty_per_unit NUMERIC NOT NULL CHECK (qty_per_unit >= 0),
-        description TEXT,
-        PRIMARY KEY(component_sku),
-        FOREIGN KEY (component_sku) REFERENCES stock(sku) ON UPDATE CASCADE ON DELETE RESTRICT
-    );
-    """,
-    # Responsables
-    """
-    CREATE TABLE IF NOT EXISTS responsables (
-        name TEXT PRIMARY KEY
-    );
-    """,
-    # Clients
-    """
-    CREATE TABLE IF NOT EXISTS clients (
-        client_id TEXT PRIMARY KEY,
-        client_name TEXT NOT NULL,
-        type TEXT,
-        phone TEXT,
-        email TEXT,
-        notes TEXT
-    );
-    """,
-    # Index utiles
-    "CREATE INDEX IF NOT EXISTS ix_mouvements_date ON mouvements(date);",
-    "CREATE INDEX IF NOT EXISTS ix_fabrications_date ON fabrications(date);",
-    "CREATE INDEX IF NOT EXISTS ix_stock_category ON stock(category);",
-]
+
 
 def run_ddl():
     with engine.begin() as conn:
-        for ddl in DDL_STATEMENTS:
-            conn.exec_driver_sql(ddl)
         # Seed de base responsables si vide
         r = conn.execute(text("SELECT COUNT(*) FROM responsables")).scalar_one()
         if r == 0:
