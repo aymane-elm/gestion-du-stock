@@ -11,11 +11,28 @@ from sqlalchemy.engine import Engine
 
 # =========================
 # CONFIG
+from pathlib import Path
+ASSETS_DIR = Path(__file__).parent / "assets"
+LOGO_PATH = ASSETS_DIR / "Qwintal_logo.png"
+
 # =========================
-st.set_page_config(page_title="Stock & Fabrication (PostgreSQL)", layout="wide")
+# === [REF:LOGO-FAVICON] Favicon de la page
+from PIL import Image
+try:
+    st.set_page_config(
+        page_title="Gestion de stock & fabrication",
+        layout="wide",
+        page_icon=Image.open(LOGO_PATH)  # favicon
+    )
+except Exception:
+    st.set_page_config(page_title="Gestion de stock & fabrication", layout="wide", page_icon="📘")
+
 st.title("Gestion de stock & fabrication")
 
 DATABASE_URL = "postgresql+psycopg2://neondb_owner:npg_gW2a0Hlfzpxn@ep-divine-scene-agixk2f3-pooler.c-2.eu-central-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+
+# === [REF:LOGO-FILES] Chemin du logo
+
 
 # =========================
 # SQL – Connexion & seed responsables
