@@ -788,13 +788,14 @@ with tab_export:
     f_to   = f2.date_input("Au", value=default_f_to, key="exp_fab_to")
     prod_pick = f3.multiselect("Produit", ["GMQ ONE", "GMQ LIVE"], default=["GMQ ONE", "GMQ LIVE"], key="exp_fab_prod")
     f4, f5 = st.columns(2)
-    # === [REF:FAB-STATUS-OPTS] Options de statut (tolérant table vide) ===
-    df_status = fetch_df(
+   # === [REF:EXP-FAB-STATUS-OPTS] Statut pour Export Fabrications ===
+    df_status_exp = fetch_df(
         "SELECT DISTINCT status AS status FROM fabrications WHERE status IS NOT NULL ORDER BY 1"
     )
-    status_vals = df_status["status"].dropna().astype(str).tolist() if "status" in df_status.columns else []
-    status_opts = ["(Tous)"] + status_vals
-    status_pick = f4.selectbox("Statut", status_opts, index=0, key="fab_list_status")
+    status_vals_exp = df_status_exp["status"].dropna().astype(str).tolist() if "status" in df_status_exp.columns else []
+    status_opts_exp = ["(Tous)"] + status_vals_exp
+    status_pick = f4.selectbox("Statut", status_opts_exp, index=0, key="exp_fab_status")
+
     client_filter = f5.text_input("Client contient", "", key="exp_fab_client")
 
     fab_exp = get_fabrications_filtered(f_from, f_to, prod_pick, status_pick if status_pick != "(Tous)" else None, client_filter)
