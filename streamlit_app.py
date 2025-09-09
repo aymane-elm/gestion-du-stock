@@ -1,5 +1,3 @@
-
-
 import os
 import uuid
 from datetime import datetime, date, timedelta
@@ -9,6 +7,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine, Result
 
 # =========================
 # CONFIG
@@ -16,7 +15,7 @@ from sqlalchemy import create_engine, text
 st.set_page_config(page_title="Stock & Fabrication (PostgreSQL)", layout="wide")
 st.title("Gestion de stock & fabrication – SQL (PostgreSQL)")
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://neondb_owner:npg_gW2a0Hlfzpxn@ep-divine-scene-agixk2f3-pooler.c-2.eu-central-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require")
+DATABASE_URL = "postgresql+psycopg2://neondb_owner:npg_gW2a0Hlfzpxn@ep-divine-scene-agixk2f3-pooler.c-2.eu-central-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 
 # =========================
 # SQL – Connexion & DDL
