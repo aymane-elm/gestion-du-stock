@@ -369,15 +369,18 @@ with tab_moves:
     default_from = (mv_all.get("dmin").iat[0] if not mv_all.empty else None) or (date.today() - timedelta(days=30))
     default_to   = (mv_all.get("dmax").iat[0] if not mv_all.empty else None) or date.today()
 
+    # === [REF:MV-FILTERS] Historique des mouvements ===
     c1, c2, c3 = st.columns(3)
-    d_from = c1.date_input("Du", value=default_from)
-    d_to   = c2.date_input("Au", value=default_to)
-    types = c3.multiselect("Type", options=["IN", "OUT"], default=["IN", "OUT"])
-
+    d_from = c1.date_input("Du", value=default_from, key="mv_hist_from")           # REF:MV_FROM
+    d_to   = c2.date_input("Au", value=default_to,   key="mv_hist_to")             # REF:MV_TO
+    types  = c3.multiselect("Type", options=["IN","OUT"], 
+                            default=["IN","OUT"], key="mv_hist_types")             # REF:MV_TYPES
+    
     c4, c5 = st.columns(2)
-    sku_filter = c4.text_input("Filtre SKU (contient)", "")
-    resp_opts = ["(Tous)"] + resp_list
-    resp_pick = c5.selectbox("Responsable", resp_opts, index=0)
+    sku_filter = c4.text_input("Filtre SKU (contient)", "", key="mv_hist_sku")     # REF:MV_SKU
+    resp_opts  = ["(Tous)"] + resp_list
+    resp_pick  = c5.selectbox("Responsable", resp_opts, index=0, key="mv_hist_resp")  # REF:MV_RESP
+
 
     mv_view = get_mouvements_filtered(d_from, d_to, types, sku_filter, resp_pick if resp_pick != "(Tous)" else None)
     st.dataframe(mv_view, use_container_width=True)
@@ -454,15 +457,20 @@ with tab_mo:
     default_f_from = (fab_mm.get("dmin").iat[0] if not fab_mm.empty else None) or (date.today() - timedelta(days=30))
     default_f_to   = (fab_mm.get("dmax").iat[0] if not fab_mm.empty else None) or date.today()
 
+        # === [REF:FAB-LIST-FILTERS] Liste des OF ===
     f1, f2, f3 = st.columns(3)
-    f_from = f1.date_input("Du", value=default_f_from)
-    f_to   = f2.date_input("Au", value=default_f_to)
-    prod_pick = f3.multiselect("Produit", ["GMQ ONE", "GMQ LIVE"], default=["GMQ ONE", "GMQ LIVE"])
-
+    f_from = f1.date_input("Du", value=default_f_from, key="fab_list_from")        # REF:FAB_FROM
+    f_to   = f2.date_input("Au", value=default_f_to,   key="fab_list_to")          # REF:FAB_TO
+    prod_pick = f3.multiselect("Produit", ["GMQ ONE","GMQ LIVE"],
+                               default=["GMQ ONE","GMQ LIVE"], key="fab_list_prod")  # REF:FAB_PROD
+    
     f4, f5 = st.columns(2)
-    status_opts = ["(Tous)"] + fetch_df("SELECT DISTINCT status FROM fabrications WHERE status IS NOT NULL ORDER BY 1")["status"].astype(str).tolist()
-    status_pick = f4.selectbox("Statut", status_opts, index=0)
-    client_filter = f5.text_input("Client contient", "")
+    status_opts  = ["(Tous)"] + fetch_df(
+        "SELECT DISTINCT status FROM fabrications WHERE status IS NOT NULL ORDER BY 1"
+    )["status"].astype(str).tolist()
+    status_pick  = f4.selectbox("Statut", status_opts, index=0, key="fab_list_status")  # REF:FAB_STATUS
+    client_filter = f5.text_input("Client contient", "", key="fab_list_client")         # REF:FAB_CLIENT
+
 
     fab_view = get_fabrications_filtered(f_from, f_to, prod_pick, status_pick if status_pick != "(Tous)" else None, client_filter)
     st.dataframe(fab_view, use_container_width=True)
