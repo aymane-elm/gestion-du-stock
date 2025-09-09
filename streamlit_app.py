@@ -11,9 +11,7 @@ from sqlalchemy.engine import Engine
 
 # =========================
 # CONFIG
-from pathlib import Path
-ASSETS_DIR = Path(__file__).parent / "assets"
-LOGO_PATH = ASSETS_DIR / "Qwintal_logo.png"
+LOGO_PATH = "Qwintal_logo.png"
 
 # =========================
 # === [REF:LOGO-FAVICON] Favicon de la page
