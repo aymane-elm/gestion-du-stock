@@ -319,10 +319,12 @@ def to_csv_bytes(df: pd.DataFrame) -> bytes:
 # UI – TABS
 # =========================
 
-tab_dash, tab_moves, tab_mo, tab_stock, tab_compos, tab_invent, tab_clients, tab_export = st.tabs([
+# [REF:TABS-DEFINE]
+tab_dash, tab_moves, tab_mo, tab_stock, tab_invent, tab_clients, tab_export, tab_import = st.tabs([
     "Dashboard", "Mouvements", "Ordres de fabrication", "Stock",
-    "Composants", "Inventaire", "Clients", "Export CSV",
+    "Inventaire", "Clients", "Export CSV", "Import Excel",
 ])
+
 
 # ---- DASHBOARD
 with tab_dash:
@@ -568,50 +570,6 @@ with tab_stock:
         key="stock_export_btn",
     )
 
-# ---- COMPOSANTS
-with tab_compos:
-    st.subheader("Recherche de composants")
-    q = st.text_input("Recherche (SKU / Nom / Description)", "", key="comp_q")
-    comp_df = fetch_df(
-        """
-        SELECT s.*
-        FROM stock s
-        WHERE LOWER(COALESCE(s.category,'')) = 'component'
-        ORDER BY s.sku
-        """
-    )
-    if q.strip():
-        mask = (
-            comp_df["sku"].astype(str).str.contains(q, case=False, na=False)
-            | comp_df["name"].astype(str).str.contains(q, case=False, na=False)
-            | comp_df["description"].astype(str).str.contains(q, case=False, na=False)
-        )
-        comp_df = comp_df[mask]
-    st.dataframe(comp_df, use_container_width=True)
-
-    st.markdown("### Ajouter un composant")
-    with st.form("add_component"):
-        c1, c2, c3 = st.columns(3)
-        sku_new = c1.text_input("SKU *", "", key="comp_sku_new")
-        name_new = c2.text_input("Nom *", "", key="comp_name_new")
-        unit_new = c3.text_input("Unité", value="pcs", key="comp_unit_new")
-        c4, c5, c6 = st.columns(3)
-        cat_new = c4.text_input("Catégorie", value="Component", key="comp_cat_new")
-        rop_new = c5.number_input("ReorderPoint", min_value=0.0, step=1.0, value=0.0, key="comp_rop_new")
-        qty_new = c6.number_input("QtyOnHand (initiale)", min_value=0.0, step=1.0, value=0.0, key="comp_qty_new")
-        desc_new = st.text_input("Description", "", key="comp_desc_new")
-        btn_add = st.form_submit_button("Ajouter")
-
-        if btn_add:
-            if not sku_new.strip() or not name_new.strip():
-                st.error("SKU et Nom sont obligatoires.")
-            else:
-                try:
-                    add_stock_item(sku_new.strip(), name_new.strip(), unit_new.strip(),
-                                   cat_new.strip(), float(rop_new), float(qty_new), (desc_new or None))
-                    st.success(f"Composant {sku_new} ajouté.")
-                except Exception as e:
-                    st.error(str(e))
 
 # ---- INVENTAIRE
 with tab_invent:
