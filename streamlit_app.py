@@ -41,10 +41,14 @@ run_seed_responsables()
 # HELPERS SQL
 # =========================
 
-def fetch_df(sql: str, params: Dict[str, Any] | None = None) -> pd.DataFrame:
+def fetch_df(sql: str, params: dict | None = None) -> pd.DataFrame:
     with engine.connect() as conn:
         res = conn.execute(text(sql), params or {})
-        return pd.DataFrame(res.mappings().all())
+        rows = res.mappings().all()
+        if not rows:
+            return pd.DataFrame(columns=list(res.keys()))  # ← garde les noms de colonnes
+        return pd.DataFrame(rows)
+
 
 
 def execute(sql: str, params: Dict[str, Any] | None = None) -> None:
@@ -784,8 +788,13 @@ with tab_export:
     f_to   = f2.date_input("Au", value=default_f_to, key="exp_fab_to")
     prod_pick = f3.multiselect("Produit", ["GMQ ONE", "GMQ LIVE"], default=["GMQ ONE", "GMQ LIVE"], key="exp_fab_prod")
     f4, f5 = st.columns(2)
-    status_opts = ["(Tous)"] + fetch_df("SELECT DISTINCT status FROM fabrications WHERE status IS NOT NULL ORDER BY 1")["status"].astype(str).tolist()
-    status_pick = f4.selectbox("Statut", status_opts, index=0, key="exp_fab_status")
+    # === [REF:FAB-STATUS-OPTS] Options de statut (tolérant table vide) ===
+    df_status = fetch_df(
+        "SELECT DISTINCT status AS status FROM fabrications WHERE status IS NOT NULL ORDER BY 1"
+    )
+    status_vals = df_status["status"].dropna().astype(str).tolist() if "status" in df_status.columns else []
+    status_opts = ["(Tous)"] + status_vals
+    status_pick = f4.selectbox("Statut", status_opts, index=0, key="fab_list_status")
     client_filter = f5.text_input("Client contient", "", key="exp_fab_client")
 
     fab_exp = get_fabrications_filtered(f_from, f_to, prod_pick, status_pick if status_pick != "(Tous)" else None, client_filter)
