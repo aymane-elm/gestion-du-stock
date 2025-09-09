@@ -13,7 +13,7 @@ from sqlalchemy.engine import Engine
 # CONFIG
 # =========================
 st.set_page_config(page_title="Stock & Fabrication (PostgreSQL)", layout="wide")
-st.title("Gestion de stock & fabrication – SQL (PostgreSQL)")
+st.title("Gestion de stock & fabrication")
 
 DATABASE_URL = "postgresql+psycopg2://neondb_owner:npg_gW2a0Hlfzpxn@ep-divine-scene-agixk2f3-pooler.c-2.eu-central-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 
