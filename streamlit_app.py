@@ -347,9 +347,9 @@ def to_csv_bytes(df: pd.DataFrame) -> bytes:
 # =========================
 
 # [REF:TABS-DEFINE]
-tab_dash, tab_moves, tab_mo, tab_stock, tab_invent, tab_clients, tab_export, tab_import = st.tabs([
+tab_dash, tab_moves, tab_mo, tab_stock, tab_invent, tab_clients, tab_export, tab_import, tab_bom = st.tabs([
     "Dashboard", "Mouvements", "Ordres de fabrication", "Stock",
-    "Inventaire", "Clients", "Export CSV", "Import Excel",
+    "Inventaire", "Clients", "Export CSV", "Import Excel", "BOM GMQ"
 ])
 
 
@@ -827,3 +827,186 @@ with tab_export:
         mime="text/csv",
         key="exp_fab_btn",
     )
+    
+def get_stock_components() -> pd.DataFrame:
+    """
+    Renvoie les composants disponibles dans le stock pour composer les BOM.
+    Colonnes attendues : id (UUID), item_name (TEXT), unit (TEXT)
+    """
+    return fetch_df("SELECT id, item_name, unit FROM stock ORDER BY item_name ASC")
+
+
+def get_stock_components() -> pd.DataFrame:
+    """Retourne les composants disponibles dans le stock pour composer les BOM."""
+    return fetch_df("SELECT id, item_name, unit FROM stock ORDER BY item_name ASC")
+
+def get_bom(table_name: str, product_code: str) -> pd.DataFrame:
+    """Charge la BOM d’un produit depuis bom_gmq_one ou bom_gmq_live avec jointure stock."""
+    if table_name not in {"bom_gmq_one", "bom_gmq_live"}:
+        raise ValueError("Table BOM inconnue")
+    if not product_code.strip():
+        return pd.DataFrame(columns=["component_id", "item_name", "unit", "qty", "notes"])
+
+    sql = f"""
+        SELECT  b.component_id::text AS component_id,
+                COALESCE(s.item_name, '??') AS item_name,
+                COALESCE(s.unit, '')        AS unit,
+                COALESCE(b.qty, 1)          AS qty,
+                COALESCE(b.notes, '')       AS notes
+        FROM {table_name} b
+        LEFT JOIN stock s ON s.id = b.component_id
+        WHERE b.product_code = :pc
+        ORDER BY item_name
+    """
+    return fetch_df(sql, {"pc": product_code})
+
+def save_bom_atomic(table_name: str, product_code: str, rows: List[Dict]) -> int:
+    """
+    Sauvegarde atomique de la BOM d’un produit
+    rows = [{component_id: str(UUID), qty: float, notes: str}]
+    """
+    if table_name not in {"bom_gmq_one", "bom_gmq_live"}:
+        raise ValueError("Table BOM inconnue")
+    if not product_code.strip():
+        raise ValueError("product_code manquant")
+    rows = rows or []
+
+    cleaned = []
+    for r in rows:
+        cid = str(r.get("component_id", "")).strip()
+        if not cid:
+            continue
+        uuid.UUID(cid)  # valide le format si la colonne est UUID
+        qty = float(r.get("qty", 1) or 1)
+        notes = (r.get("notes") or "").strip()
+        cleaned.append({"component_id": cid, "qty": qty, "notes": notes})
+
+    with engine.begin() as conn:
+        conn.execute(text(f"DELETE FROM {table_name} WHERE product_code = :pc"), {"pc": product_code})
+        if cleaned:
+            # Si component_id n’est pas de type UUID en base, retire ::uuid ci-dessous
+            stmt = text(f"""
+                INSERT INTO {table_name} (product_code, component_id, qty, notes)
+                VALUES (:pc, :component_id::uuid, :qty, :notes)
+            """)
+            payload = [{"pc": product_code, **row} for row in cleaned]
+            conn.execute(stmt, payload)
+    return len(cleaned)
+
+
+# =============================== ONGLET BOM ===============================
+
+with tab_bom:
+    st.subheader("BOM — GMQ")
+
+    # Choix de la table BOM
+    table_choice = st.radio(
+        "Table BOM à modifier",
+        options=["bom_gmq_one", "bom_gmq_live"],
+        horizontal=True,
+        key="bom_table_choice",
+    )
+
+    # Saisie de la référence produit
+    st.markdown("### Sélection du produit")
+    colp1, colp2 = st.columns([2, 1])
+    product_code = colp1.text_input("Référence produit (product_code) *", key="bom_product_code")
+    btn_load = colp2.button("🔄 Charger la BOM", use_container_width=True)
+
+    # Chargement du stock
+    stock_df = get_stock_components()
+    stock_id_to_name = dict(zip(stock_df["id"].astype(str), stock_df["item_name"]))
+    stock_id_to_unit = dict(zip(stock_df["id"].astype(str), stock_df["unit"]))
+
+    # État local de la BOM affichée
+    state_key = f"bom_df_{table_choice}"
+    if state_key not in st.session_state:
+        st.session_state[state_key] = pd.DataFrame(columns=["component_id", "item_name", "unit", "qty", "notes"])
+
+    # Charger depuis la base
+    if btn_load and product_code.strip():
+        st.session_state[state_key] = get_bom(table_choice, product_code)
+
+    # Ajout de composants depuis le stock
+    st.markdown("### Construire ou modifier la BOM")
+    with st.expander("➕ Ajouter des composants depuis le stock"):
+        added_ids = st.multiselect(
+            "Composants à ajouter",
+            options=stock_df["id"].astype(str).tolist(),
+            format_func=lambda cid: f"{stock_id_to_name.get(cid, '??')} — {cid}",
+            key="bom_add_ids",
+        )
+        default_qty = st.number_input("Quantité par défaut", min_value=0.0, value=1.0, step=1.0, key="bom_default_qty")
+        if st.button("Ajouter à la BOM courante", key="bom_add_btn"):
+            current = st.session_state[state_key].copy()
+            existing = set(current["component_id"].astype(str)) if not current.empty else set()
+            to_add = [cid for cid in added_ids if cid not in existing]
+            if to_add:
+                add_rows = pd.DataFrame({
+                    "component_id": to_add,
+                    "item_name": [stock_id_to_name.get(cid, "??") for cid in to_add],
+                    "unit": [stock_id_to_unit.get(cid, "") for cid in to_add],
+                    "qty": [default_qty for _ in to_add],
+                    "notes": ["" for _ in to_add],
+                })
+                st.session_state[state_key] = pd.concat([current, add_rows], ignore_index=True)
+                st.success(f"{len(to_add)} composant(s) ajouté(s).")
+            else:
+                st.info("Aucun nouveau composant à ajouter.")
+
+    # Éditeur interactif
+    st.markdown("### Éditer la BOM")
+    edited_df = st.data_editor(
+        st.session_state[state_key],
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "component_id": st.column_config.TextColumn("component_id (UUID)"),
+            "item_name": st.column_config.TextColumn("Nom composant", disabled=True),
+            "unit": st.column_config.TextColumn("Unité", disabled=True),
+            "qty": st.column_config.NumberColumn("Quantité", min_value=0.0, step=0.1),
+            "notes": st.column_config.TextColumn("Notes"),
+        },
+        key=f"bom_editor_{table_choice}",
+    )
+
+    # Actions
+    csa, csb, csc = st.columns(3)
+    if csa.button("🧹 Vider la BOM courante (local)", key="bom_clear_local"):
+        st.session_state[state_key] = pd.DataFrame(columns=["component_id", "item_name", "unit", "qty", "notes"])
+        st.info("BOM locale vidée")
+
+    if csb.button("🗑️ Supprimer les lignes sélectionnées (local)", key="bom_del_rows_local"):
+        st.warning("Pour supprimer localement, mets la quantité à 0 puis Enregistrer")
+
+    if csc.button("💾 Enregistrer dans la base", key="bom_save_db"):
+        try:
+            if not product_code.strip():
+                st.error("Renseigne d’abord la référence produit")
+            else:
+                valid_ids = set(stock_df["id"].astype(str))
+                work = edited_df.copy()
+                work = work[work["component_id"].astype(str).isin(valid_ids)]
+                work = work[pd.to_numeric(work["qty"], errors="coerce").fillna(0) > 0]
+
+                rows = [{
+                    "component_id": str(r["component_id"]),
+                    "qty": float(r["qty"]),
+                    "notes": str(r.get("notes", "") or ""),
+                } for _, r in work.iterrows()]
+
+                n = save_bom_atomic(table_choice, product_code, rows)
+                st.success(f"BOM enregistrée avec {n} ligne(s) pour « {product_code} » dans {table_choice}")
+                try:
+                    st.toast("BOM enregistrée")
+                except Exception:
+                    pass
+                st.session_state[state_key] = get_bom(table_choice, product_code)
+                st.rerun()
+        except Exception as e:
+            st.error(f"Erreur lors de l’enregistrement : {e}")
+
+    if product_code.strip():
+        st.caption(f"Produit en cours : {product_code} — Table : {table_choice}")
+    else:
+        st.caption("Renseigne une référence produit pour charger ou éditer sa BOM")
