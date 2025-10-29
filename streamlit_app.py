@@ -6,7 +6,7 @@ from typing import Dict, Any, List, Tuple
 import numpy as np
 import pandas as pd
 import streamlit as st
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, bindparam
 from sqlalchemy.engine import Engine
 
 # =========================
@@ -98,11 +98,23 @@ def insert_client_return_id(name: str, ctype: str = "Passage", phone: str | None
         return str(row["id"])  # uuid
 
 
-def delete_clients(ids: List[str]):
+# remplace intégralement la fonction actuelle
+def delete_clients(ids: List[str]) -> int:
     if not ids:
-        return
+        return 0
+
+    # Colonne id est de type UUID → on cast
+    ids_uuid = [uuid.UUID(x) for x in ids]
+
+    # expanding IN :ids → SQLAlchemy génère automatiquement (.., .., ..)
+    stmt = text("DELETE FROM clients WHERE id IN :ids").bindparams(
+        bindparam("ids", expanding=True)
+    )
+
     with engine.begin() as conn:
-        conn.execute(text("DELETE FROM clients WHERE id = ANY(:ids)"), {"ids": ids})
+        res = conn.execute(stmt, {"ids": ids_uuid})
+        return res.rowcount
+
 
 
 # =========================
@@ -650,15 +662,18 @@ with tab_invent:
 with tab_clients:
     st.subheader("Clients")
 
+    # === Ajouter un client
     st.markdown("### Ajouter un client")
     with st.form("add_client"):
         c1, c2 = st.columns(2)
         cname = c1.text_input("Nom du client *", "", key="cli_name")
         ctype = c2.selectbox("Type", ["Régulier", "Passage"], key="cli_type")
+
         c3, c4, c5 = st.columns(3)
         cphone = c3.text_input("Téléphone", "", key="cli_phone")
         cemail = c4.text_input("Email", "", key="cli_email")
         cnotes = c5.text_input("Notes", "", key="cli_notes")
+
         btn_cli = st.form_submit_button("Ajouter")
 
         if btn_cli:
@@ -666,26 +681,40 @@ with tab_clients:
                 st.error("Le nom du client est obligatoire.")
             else:
                 try:
-                    _ = insert_client_return_id(cname.strip(), ctype, cphone.strip() or None, cemail.strip() or None, cnotes.strip() or None)
+                    _ = insert_client_return_id(
+                        cname.strip(),
+                        ctype,
+                        cphone.strip() or None,
+                        cemail.strip() or None,
+                        cnotes.strip() or None,
+                    )
                     st.success(f"Client « {cname.strip()} » ajouté.")
-                    st.toast("Client ajouté")
+                    try:
+                        st.toast("Client ajouté")  # ok si Streamlit récent
+                    except Exception:
+                        pass
+                    st.rerun()
                 except Exception as e:
                     st.error(str(e))
 
+    # === Rechercher / Supprimer
     st.markdown("### Rechercher / Supprimer des clients")
+
     cq = st.text_input("Recherche client (nom, téléphone, email)", "", key="clients_search")
-    cl = get_clients()
+    cl = get_clients()  # Doit renvoyer un DataFrame avec colonnes: id, client_name, phone, email
+
     if cq.strip():
+        # recherche en mode texte simple, pas de regex
         m = (
-            cl["client_name"].astype(str).str.contains(cq, case=False, na=False)
-            | cl["phone"].astype(str).str.contains(cq, case=False, na=False)
-            | cl["email"].astype(str).str.contains(cq, case=False, na=False)
+            cl["client_name"].astype(str).str.contains(cq, case=False, na=False, regex=False)
+            | cl["phone"].astype(str).str.contains(cq, case=False, na=False, regex=False)
+            | cl["email"].astype(str).str.contains(cq, case=False, na=False, regex=False)
         )
         cl = cl[m]
 
     st.dataframe(cl, use_container_width=True)
 
-    # Multiselect basé sur les UUID, affichage nom
+    # Sélection multiple basée sur les UUID, affichage "uuid – nom"
     options = cl["id"].astype(str).tolist()
     id_to_name = dict(zip(cl["id"].astype(str), cl["client_name"].astype(str)))
     del_ids = st.multiselect(
@@ -699,15 +728,34 @@ with tab_clients:
         if not del_ids:
             st.info("Aucun client sélectionné.")
         else:
-            # avertissement : clients référencés par des OF
-            used_ids_df = fetch_df("SELECT DISTINCT client_id FROM fabrications WHERE client_id IS NOT NULL")
-            used_set = set(used_ids_df["client_id"].dropna().astype(str).tolist()) if not used_ids_df.empty else set()
+            # Vérifier les références dans les OF
+            used_ids_df = fetch_df(
+                "SELECT DISTINCT client_id FROM fabrications WHERE client_id IS NOT NULL"
+            )
+            used_set = set(
+                used_ids_df["client_id"].dropna().astype(str).tolist()
+            ) if not used_ids_df.empty else set()
+
             referenced = [cid for cid in del_ids if cid in used_set]
+            deletable = [cid for cid in del_ids if cid not in used_set]
+
             if referenced:
                 names = [id_to_name.get(cid, cid) for cid in referenced]
-                st.warning("Attention : des ordres de fabrication référencent ces clients : " + ", ".join(names))
-            delete_clients(del_ids)
-            st.success(f"Suppression effectuée ({len(del_ids)} client(s)).")
+                st.warning(
+                    "Ces clients sont référencés par des ordres de fabrication et ne seront pas supprimés : "
+                    + ", ".join(names)
+                )
+
+            try:
+                n = delete_clients(deletable) if deletable else 0
+                st.success(f"Suppression effectuée ({n} client(s)).")
+                try:
+                    st.toast("Suppression terminée")
+                except Exception:
+                    pass
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erreur lors de la suppression : {e}")
 
 # ---- EXPORT CSV
 with tab_export:
