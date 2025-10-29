@@ -828,37 +828,100 @@ with tab_export:
         key="exp_fab_btn",
     )
     
+
+
+# ============================ HELPERS BOM ============================
+
+# Helper pour lister les colonnes d'une table (PostgreSQL / SQLite compatibles)
+def _get_table_columns(table_name: str) -> list[str]:
+    try:
+        # PostgreSQL : information_schema
+        cols = fetch_df("""
+            SELECT lower(column_name) AS column_name
+            FROM information_schema.columns
+            WHERE lower(table_name) = lower(:tname)
+            ORDER BY ordinal_position
+        """, {"tname": table_name})
+        if not cols.empty:
+            return cols["column_name"].tolist()
+    except Exception:
+        pass
+
+    # Fallback générique : lire une ligne et prendre les colonnes
+    try:
+        df_try = fetch_df(f"SELECT * FROM {table_name} LIMIT 1")
+        return [c.lower() for c in df_try.columns]
+    except Exception:
+        return []
+
 def get_stock_components() -> pd.DataFrame:
     """
-    Renvoie les composants disponibles dans le stock pour composer les BOM.
-    Colonnes attendues : id (UUID), item_name (TEXT), unit (TEXT)
+    Retourne un DataFrame avec colonnes normalisées :
+      id (str), item_name (str), unit (str)
+    à partir de la table 'stock', quels que soient les noms réels proches.
     """
-    return fetch_df("SELECT id, item_name, unit FROM stock ORDER BY item_name ASC")
+    # 1) tentative directe (id, item_name, unit)
+    try:
+        return fetch_df("SELECT id, item_name, unit FROM stock ORDER BY item_name ASC")
+    except (ProgrammingError, DBAPIError):
+        pass
+    except Exception:
+        pass
 
+    # 2) auto-détection des colonnes réelles
+    cols = _get_table_columns("stock")
+    if not cols:
+        st.error("Impossible de lire la table 'stock' (aucune colonne détectée). Vérifie que la table existe et que l’utilisateur DB a accès.")
+        return pd.DataFrame(columns=["id", "item_name", "unit"])
 
-def get_stock_components() -> pd.DataFrame:
-    """Retourne les composants disponibles dans le stock pour composer les BOM."""
-    return fetch_df("SELECT id, item_name, unit FROM stock ORDER BY item_name ASC")
+    lc = set(cols)
 
-def get_bom(table_name: str, product_code: str) -> pd.DataFrame:
-    """Charge la BOM d’un produit depuis bom_gmq_one ou bom_gmq_live avec jointure stock."""
-    if table_name not in {"bom_gmq_one", "bom_gmq_live"}:
-        raise ValueError("Table BOM inconnue")
-    if not product_code.strip():
-        return pd.DataFrame(columns=["component_id", "item_name", "unit", "qty", "notes"])
+    # candidats par champ
+    id_candidates    = ["id", "stock_id", "uuid", "pk", "id_stock"]
+    name_candidates  = ["item_name", "name", "designation", "libelle", "label", "descr", "description", "article", "product_name"]
+    unit_candidates  = ["unit", "unite", "uom", "unity", "unit_name", "unite_mesure"]
 
-    sql = f"""
-        SELECT  b.component_id::text AS component_id,
-                COALESCE(s.item_name, '??') AS item_name,
-                COALESCE(s.unit, '')        AS unit,
-                COALESCE(b.qty, 1)          AS qty,
-                COALESCE(b.notes, '')       AS notes
-        FROM {table_name} b
-        LEFT JOIN stock s ON s.id = b.component_id
-        WHERE b.product_code = :pc
-        ORDER BY item_name
-    """
-    return fetch_df(sql, {"pc": product_code})
+    def pick(cands: list[str]) -> str | None:
+        for c in cands:
+            if c in lc:
+                return c
+        return None
+
+    id_col   = pick(id_candidates)
+    name_col = pick(name_candidates)
+    unit_col = pick(unit_candidates)  # peut être None
+
+    # Construire le SELECT dynamique avec alias normalisés
+    if not id_col or not name_col:
+        st.error(
+            "Colonnes attendues introuvables dans 'stock'. "
+            f"Trouvé: {sorted(lc)}. Il faut au minimum un identifiant (ex: {id_candidates}) "
+            f"et un nom (ex: {name_candidates})."
+        )
+        return pd.DataFrame(columns=["id", "item_name", "unit"])
+
+    if unit_col:
+        sql = f"""
+            SELECT {id_col}::text AS id,
+                   {name_col}::text AS item_name,
+                   COALESCE({unit_col}::text, '') AS unit
+            FROM stock
+            ORDER BY {name_col} ASC
+        """
+    else:
+        sql = f"""
+            SELECT {id_col}::text AS id,
+                   {name_col}::text AS item_name,
+                   '' AS unit
+            FROM stock
+            ORDER BY {name_col} ASC
+        """
+
+    try:
+        return fetch_df(sql)
+    except Exception as e:
+        st.error(f"Erreur lors de la lecture de 'stock' avec colonnes détectées {id_col}, {name_col}, {unit_col or '(aucune)'} : {e}")
+        return pd.DataFrame(columns=["id", "item_name", "unit"])
 
 def save_bom_atomic(table_name: str, product_code: str, rows: List[Dict]) -> int:
     """
@@ -892,6 +955,10 @@ def save_bom_atomic(table_name: str, product_code: str, rows: List[Dict]) -> int
             payload = [{"pc": product_code, **row} for row in cleaned]
             conn.execute(stmt, payload)
     return len(cleaned)
+
+
+
+
 
 
 # =============================== ONGLET BOM ===============================
