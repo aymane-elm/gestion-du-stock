@@ -913,16 +913,14 @@ def save_bom_full_replace(table_name: str, df: pd.DataFrame, stock_df: pd.DataFr
     return len(rows)
 
 
+def _load_bom_full_into_state(table_name: str):
+    state_key = f"bom_full_df_{table_name}"
+    st.session_state[state_key] = get_bom_full(table_name)
 
-
-
-
-# =============================== ONGLET BOM (SKU-based) ===============================
-
+# =============================== ONGLET BOM ===============================
 with tab_bom:
     st.subheader("BOM — GMQ (édition par table)")
 
-    # Choix direct de la table → on charge la table entière
     table_choice = st.radio(
         "Table BOM à modifier",
         options=["bom_gmq_one", "bom_gmq_live"],
@@ -930,21 +928,32 @@ with tab_bom:
         key="bom_table_choice",
     )
 
-    # Référentiel composants (SKU, nom, unité)
+    # Référentiel composants
     stock_df = get_stock_components()
     stock_id_to_name = dict(zip(stock_df["id"].astype(str), stock_df["item_name"]))
     stock_id_to_unit = dict(zip(stock_df["id"].astype(str), stock_df["unit"]))
 
-    # État local de la table BOM chargée
+    # --------- CHARGEMENT CONTRÔLÉ (ne pas écraser à chaque run !) ---------
     state_key = f"bom_full_df_{table_choice}"
-    if state_key not in st.session_state:
-        st.session_state[state_key] = get_bom_full(table_choice)
-    else:
-        # Si l'utilisateur change de table, recharge
-        # (Streamlit garde la même clé quand on change table_choice → on force refresh)
-        st.session_state[state_key] = get_bom_full(table_choice)
+    # mémoriser la dernière table
+    if "bom_last_table" not in st.session_state:
+        st.session_state["bom_last_table"] = table_choice
 
-    # Ajout de composants depuis le stock
+    # 1) première fois pour cette table
+    if state_key not in st.session_state:
+        _load_bom_full_into_state(table_choice)
+
+    # 2) si l’utilisateur change de table → recharger la nouvelle, ne pas toucher sinon
+    if st.session_state["bom_last_table"] != table_choice:
+        _load_bom_full_into_state(table_choice)
+        st.session_state["bom_last_table"] = table_choice
+
+    # 3) bouton de refresh manuel (pas automatique à chaque run)
+    if st.button("🔄 Recharger depuis la base", key="bom_refresh_btn"):
+        _load_bom_full_into_state(table_choice)
+
+    # ----------------------------------------------------------------------
+
     st.markdown("### Ajouter des composants (depuis le stock)")
     with st.expander("➕ Ajouter"):
         added_skus = st.multiselect(
@@ -971,7 +980,6 @@ with tab_bom:
             else:
                 st.info("Aucun nouveau composant à ajouter.")
 
-    # Édition de la table (component_sku fige la clé, qty et description éditables)
     st.markdown("### Éditer la BOM")
     edited_df = st.data_editor(
         st.session_state[state_key],
@@ -997,6 +1005,7 @@ with tab_bom:
 
     if c3.button("💾 Enregistrer dans la base", key="bom_save_full"):
         try:
+            # IMPORTANT : on sauve **le DataFrame édité**, pas le rechargé
             n = save_bom_full_replace(table_choice, edited_df, stock_df)
             if n == 0 and (edited_df is None or edited_df.empty):
                 st.warning("Éditeur vide → par sécurité, la table n’a pas été modifiée.")
@@ -1006,10 +1015,10 @@ with tab_bom:
                     st.toast("BOM enregistrée")
                 except Exception:
                     pass
-                st.session_state[state_key] = get_bom_full(table_choice)
+                # maintenant on recharge depuis la DB (après save), puis on rerun
+                _load_bom_full_into_state(table_choice)
                 st.rerun()
         except Exception as e:
             st.error(f"Erreur lors de l’enregistrement : {e}")
 
-    st.caption(f"Table en cours : **{table_choice}** — clés = **component_sku** (doit correspondre à stock.sku)")
 
