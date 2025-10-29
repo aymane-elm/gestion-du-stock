@@ -910,12 +910,11 @@ def save_bom_atomic(table_name: str, product_code: str, rows: List[Dict]) -> int
 
 
 
-# =============================== ONGLET BOM ===============================
+# =============================== ONGLET BOM (SKU-based) ===============================
 
 with tab_bom:
     st.subheader("BOM — GMQ")
 
-    # Choix de la table BOM
     table_choice = st.radio(
         "Table BOM à modifier",
         options=["bom_gmq_one", "bom_gmq_live"],
@@ -923,32 +922,28 @@ with tab_bom:
         key="bom_table_choice",
     )
 
-    # Saisie de la référence produit
     st.markdown("### Sélection du produit")
     colp1, colp2 = st.columns([2, 1])
     product_code = colp1.text_input("Référence produit (product_code) *", key="bom_product_code")
     btn_load = colp2.button("🔄 Charger la BOM", use_container_width=True)
 
-    # Chargement du stock
-    stock_df = get_stock_components()
+    # Stock basé sur SKU
+    stock_df = get_stock_components()  # colonnes: id (=sku), item_name, unit
     stock_id_to_name = dict(zip(stock_df["id"].astype(str), stock_df["item_name"]))
     stock_id_to_unit = dict(zip(stock_df["id"].astype(str), stock_df["unit"]))
 
-    # État local de la BOM affichée
     state_key = f"bom_df_{table_choice}"
     if state_key not in st.session_state:
         st.session_state[state_key] = pd.DataFrame(columns=["component_id", "item_name", "unit", "qty", "notes"])
 
-    # Charger depuis la base
     if btn_load and product_code.strip():
         st.session_state[state_key] = get_bom(table_choice, product_code)
 
-    # Ajout de composants depuis le stock
     st.markdown("### Construire ou modifier la BOM")
     with st.expander("➕ Ajouter des composants depuis le stock"):
         added_ids = st.multiselect(
-            "Composants à ajouter",
-            options=stock_df["id"].astype(str).tolist(),
+            "Composants à ajouter (SKU)",
+            options=stock_df["id"].astype(str).tolist(),  # SKU
             format_func=lambda cid: f"{stock_id_to_name.get(cid, '??')} — {cid}",
             key="bom_add_ids",
         )
@@ -959,7 +954,7 @@ with tab_bom:
             to_add = [cid for cid in added_ids if cid not in existing]
             if to_add:
                 add_rows = pd.DataFrame({
-                    "component_id": to_add,
+                    "component_id": to_add,  # SKU
                     "item_name": [stock_id_to_name.get(cid, "??") for cid in to_add],
                     "unit": [stock_id_to_unit.get(cid, "") for cid in to_add],
                     "qty": [default_qty for _ in to_add],
@@ -970,14 +965,13 @@ with tab_bom:
             else:
                 st.info("Aucun nouveau composant à ajouter.")
 
-    # Éditeur interactif
     st.markdown("### Éditer la BOM")
     edited_df = st.data_editor(
         st.session_state[state_key],
         num_rows="dynamic",
         use_container_width=True,
         column_config={
-            "component_id": st.column_config.TextColumn("component_id (UUID)"),
+            "component_id": st.column_config.TextColumn("component_id (SKU)"),
             "item_name": st.column_config.TextColumn("Nom composant", disabled=True),
             "unit": st.column_config.TextColumn("Unité", disabled=True),
             "qty": st.column_config.NumberColumn("Quantité", min_value=0.0, step=0.1),
@@ -986,7 +980,6 @@ with tab_bom:
         key=f"bom_editor_{table_choice}",
     )
 
-    # Actions
     csa, csb, csc = st.columns(3)
     if csa.button("🧹 Vider la BOM courante (local)", key="bom_clear_local"):
         st.session_state[state_key] = pd.DataFrame(columns=["component_id", "item_name", "unit", "qty", "notes"])
@@ -1000,13 +993,13 @@ with tab_bom:
             if not product_code.strip():
                 st.error("Renseigne d’abord la référence produit")
             else:
-                valid_ids = set(stock_df["id"].astype(str))
+                valid_ids = set(stock_df["id"].astype(str))  # SKUs valides
                 work = edited_df.copy()
                 work = work[work["component_id"].astype(str).isin(valid_ids)]
                 work = work[pd.to_numeric(work["qty"], errors="coerce").fillna(0) > 0]
 
                 rows = [{
-                    "component_id": str(r["component_id"]),
+                    "component_id": str(r["component_id"]),  # SKU
                     "qty": float(r["qty"]),
                     "notes": str(r.get("notes", "") or ""),
                 } for _, r in work.iterrows()]
@@ -1026,3 +1019,4 @@ with tab_bom:
         st.caption(f"Produit en cours : {product_code} — Table : {table_choice}")
     else:
         st.caption("Renseigne une référence produit pour charger ou éditer sa BOM")
+
