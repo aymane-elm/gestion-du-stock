@@ -834,100 +834,49 @@ with tab_export:
 # ============================ HELPERS BOM ============================
 
 # Helper pour lister les colonnes d'une table (PostgreSQL / SQLite compatibles)
-def _get_table_columns(table_name: str) -> list[str]:
-    try:
-        # PostgreSQL : information_schema
-        cols = fetch_df("""
-            SELECT lower(column_name) AS column_name
-            FROM information_schema.columns
-            WHERE lower(table_name) = lower(:tname)
-            ORDER BY ordinal_position
-        """, {"tname": table_name})
-        if not cols.empty:
-            return cols["column_name"].tolist()
-    except Exception:
-        pass
-
-    # Fallback générique : lire une ligne et prendre les colonnes
-    try:
-        df_try = fetch_df(f"SELECT * FROM {table_name} LIMIT 1")
-        return [c.lower() for c in df_try.columns]
-    except Exception:
-        return []
-
 def get_stock_components() -> pd.DataFrame:
+    """Retourne les composants stock avec colonnes normalisées: id (=sku), item_name (=name), unit."""
+    # Ici on mappe explicitement sku->id, name->item_name
+    sql = """
+        SELECT
+            sku::text   AS id,
+            name::text  AS item_name,
+            COALESCE(unit::text, '') AS unit
+        FROM stock
+        ORDER BY name ASC
     """
-    Retourne un DataFrame avec colonnes normalisées :
-      id (str), item_name (str), unit (str)
-    à partir de la table 'stock', quels que soient les noms réels proches.
+    return fetch_df(sql)
+
+def get_bom(table_name: str, product_code: str) -> pd.DataFrame:
     """
-    # 1) tentative directe (id, item_name, unit)
-    try:
-        return fetch_df("SELECT id, item_name, unit FROM stock ORDER BY item_name ASC")
-    except (sa_exc.ProgrammingError, sa_exc.DBAPIError):
-        pass
-    except Exception:
-        pass
+    Charge la BOM d’un produit depuis bom_gmq_one / bom_gmq_live.
+    Hypothèse: la colonne de référence dans la BOM s’appelle 'component_id' et stocke le SKU (TEXT),
+    et on joint sur stock.sku.
+    """
+    if table_name not in {"bom_gmq_one", "bom_gmq_live"}:
+        raise ValueError("Table BOM inconnue")
+    if not product_code.strip():
+        return pd.DataFrame(columns=["component_id", "item_name", "unit", "qty", "notes"])
 
-    # 2) auto-détection des colonnes réelles
-    cols = _get_table_columns("stock")
-    if not cols:
-        st.error("Impossible de lire la table 'stock' (aucune colonne détectée). Vérifie que la table existe et que l’utilisateur DB a accès.")
-        return pd.DataFrame(columns=["id", "item_name", "unit"])
-
-    lc = set(cols)
-
-    # candidats par champ
-    id_candidates    = ["id", "stock_id", "uuid", "pk", "id_stock"]
-    name_candidates  = ["item_name", "name", "designation", "libelle", "label", "descr", "description", "article", "product_name"]
-    unit_candidates  = ["unit", "unite", "uom", "unity", "unit_name", "unite_mesure"]
-
-    def pick(cands: list[str]) -> str | None:
-        for c in cands:
-            if c in lc:
-                return c
-        return None
-
-    id_col   = pick(id_candidates)
-    name_col = pick(name_candidates)
-    unit_col = pick(unit_candidates)  # peut être None
-
-    # Construire le SELECT dynamique avec alias normalisés
-    if not id_col or not name_col:
-        st.error(
-            "Colonnes attendues introuvables dans 'stock'. "
-            f"Trouvé: {sorted(lc)}. Il faut au minimum un identifiant (ex: {id_candidates}) "
-            f"et un nom (ex: {name_candidates})."
-        )
-        return pd.DataFrame(columns=["id", "item_name", "unit"])
-
-    if unit_col:
-        sql = f"""
-            SELECT {id_col}::text AS id,
-                   {name_col}::text AS item_name,
-                   COALESCE({unit_col}::text, '') AS unit
-            FROM stock
-            ORDER BY {name_col} ASC
-        """
-    else:
-        sql = f"""
-            SELECT {id_col}::text AS id,
-                   {name_col}::text AS item_name,
-                   '' AS unit
-            FROM stock
-            ORDER BY {name_col} ASC
-        """
-
-    try:
-        return fetch_df(sql)
-    except Exception as e:
-        st.error(f"Erreur lors de la lecture de 'stock' avec colonnes détectées {id_col}, {name_col}, {unit_col or '(aucune)'} : {e}")
-        return pd.DataFrame(columns=["id", "item_name", "unit"])
+    sql = f"""
+        SELECT
+            b.component_id::text                  AS component_id,   -- contient le SKU
+            COALESCE(s.name, '??')               AS item_name,
+            COALESCE(s.unit, '')                 AS unit,
+            COALESCE(b.qty, 1)                   AS qty,
+            COALESCE(b.notes, '')                AS notes
+        FROM {table_name} b
+        LEFT JOIN stock s ON s.sku = b.component_id   -- clé = SKU
+        WHERE b.product_code = :pc
+        ORDER BY item_name
+    """
+    return fetch_df(sql, {"pc": product_code})
 
 def save_bom_atomic(table_name: str, product_code: str, rows: List[Dict]) -> int:
     """
-    Sauvegarde atomique de la BOM d’un produit
-    rows = [{component_id: str(UUID), qty: float, notes: str}]
+    Sauvegarde atomique de la BOM d’un produit (DELETE + INSERT).
+    Ici 'component_id' est un SKU (TEXT).
+    rows = [{component_id: str (SKU), qty: float, notes: str}]
     """
     if table_name not in {"bom_gmq_one", "bom_gmq_live"}:
         raise ValueError("Table BOM inconnue")
@@ -937,10 +886,9 @@ def save_bom_atomic(table_name: str, product_code: str, rows: List[Dict]) -> int
 
     cleaned = []
     for r in rows:
-        cid = str(r.get("component_id", "")).strip()
+        cid = str(r.get("component_id", "")).strip()  # SKU texte
         if not cid:
             continue
-        uuid.UUID(cid)  # valide le format si la colonne est UUID
         qty = float(r.get("qty", 1) or 1)
         notes = (r.get("notes") or "").strip()
         cleaned.append({"component_id": cid, "qty": qty, "notes": notes})
@@ -948,10 +896,10 @@ def save_bom_atomic(table_name: str, product_code: str, rows: List[Dict]) -> int
     with engine.begin() as conn:
         conn.execute(text(f"DELETE FROM {table_name} WHERE product_code = :pc"), {"pc": product_code})
         if cleaned:
-            # Si component_id n’est pas de type UUID en base, retire ::uuid ci-dessous
+            # INSERT en TEXT simple (PAS de ::uuid)
             stmt = text(f"""
                 INSERT INTO {table_name} (product_code, component_id, qty, notes)
-                VALUES (:pc, :component_id::uuid, :qty, :notes)
+                VALUES (:pc, :component_id, :qty, :notes)
             """)
             payload = [{"pc": product_code, **row} for row in cleaned]
             conn.execute(stmt, payload)
