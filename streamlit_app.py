@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text, bindparam
+from sqlalchemy import exc as sa_exc
 from sqlalchemy.engine import Engine
 
 # =========================
@@ -863,7 +864,7 @@ def get_stock_components() -> pd.DataFrame:
     # 1) tentative directe (id, item_name, unit)
     try:
         return fetch_df("SELECT id, item_name, unit FROM stock ORDER BY item_name ASC")
-    except (ProgrammingError, DBAPIError):
+    except (sa_exc.ProgrammingError, sa_exc.DBAPIError):
         pass
     except Exception:
         pass
