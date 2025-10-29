@@ -348,9 +348,9 @@ def to_csv_bytes(df: pd.DataFrame) -> bytes:
 # =========================
 
 # [REF:TABS-DEFINE]
-tab_dash, tab_moves, tab_mo, tab_stock, tab_invent, tab_clients, tab_export, tab_import, tab_bom = st.tabs([
+tab_dash, tab_moves, tab_mo, tab_stock, tab_invent, tab_clients, tab_export, tab_bom = st.tabs([
     "Dashboard", "Mouvements", "Ordres de fabrication", "Stock",
-    "Inventaire", "Clients", "Export CSV", "Import Excel", "BOM GMQ"
+    "Inventaire", "Clients", "Export CSV", "BOM GMQ"
 ])
 
 
