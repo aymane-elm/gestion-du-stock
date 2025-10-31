@@ -722,10 +722,85 @@ with tab_invent:
     responsable_inv = st.selectbox("Responsable inventaire", resp_list, index=0)
     ref_inv = st.text_input("Référence d'inventaire", value=f"INV-{datetime.now():%Y%m%d}")
 
-    st.markdown("**Saisir le comptage**")
-    stock_df = get_stock()
+    # --- Chargement du stock actuel
+    stock_df = get_stock()  # doit retourner au moins: sku, qty_on_hand
+
+    # --- (NOUVEAU) Import CSV
+    st.markdown("**Importer un CSV**")
+    st.caption("Colonnes attendues : `SKU`, `Compté`. Les noms proches sont auto-reconnus (sku, counted, qte, etc.).")
+    csv_file = st.file_uploader("Choisir un fichier CSV", type=["csv"], key="inv_csv_uploader")
+
+    # Petite fonction pour lire intelligemment le CSV
+    def _read_csv_smart(file) -> pd.DataFrame:
+        import io
+        for sep in [";", ",", "\t", "|"]:
+            try:
+                df = pd.read_csv(io.BytesIO(file.read()), sep=sep)
+                if df.shape[1] >= 1:
+                    return df
+            except Exception:
+                file.seek(0)  # reset le curseur pour un prochain essai
+                continue
+        file.seek(0)
+        # dernier essai par défaut (virgule)
+        return pd.read_csv(file)
+
+    # Normaliser les colonnes vers ['SKU','Compté']
+    def _coerce_inventory_df(df_raw: pd.DataFrame) -> pd.DataFrame:
+        if df_raw is None or df_raw.empty:
+            return pd.DataFrame(columns=["SKU", "Compté"])
+        df = df_raw.copy()
+        lower = {c.lower().strip(): c for c in df.columns}
+
+        # Candidats possibles pour SKU
+        sku_col = None
+        for c in ["sku", "code", "ref", "reference", "article", "id", "component_sku"]:
+            if c in lower:
+                sku_col = lower[c]
+                break
+
+        # Candidats possibles pour quantité comptée
+        counted_col = None
+        for c in ["compté", "compte", "counted", "count", "qte", "quantite", "quantité", "qty", "qty_counted", "qte_comptee", "qte_comptée"]:
+            if c in lower:
+                counted_col = lower[c]
+                break
+
+        if not sku_col or not counted_col:
+            # si on ne trouve pas, on tente les noms exacts
+            if "SKU" in df.columns and "Compté" in df.columns:
+                sku_col, counted_col = "SKU", "Compté"
+            else:
+                st.error(
+                    "Colonnes non reconnues. Il faut au minimum des colonnes 'SKU' et 'Compté' "
+                    "(ou équivalents : sku, qte, counted, quantite, ...)."
+                )
+                return pd.DataFrame(columns=["SKU", "Compté"])
+
+        out = pd.DataFrame({
+            "SKU": df[sku_col].astype(str),
+            "Compté": pd.to_numeric(df[counted_col], errors="coerce")
+        })
+        out["Compté"] = out["Compté"].fillna(0.0)
+        # on supprime les lignes vides de SKU
+        out = out[out["SKU"].str.strip() != ""]
+        return out
+
+    # Source des données de comptage : CSV (prioritaire) ou saisie manuelle
+    uploaded_edited = None
+    if csv_file is not None:
+        try:
+            raw = _read_csv_smart(csv_file)
+            uploaded_edited = _coerce_inventory_df(raw)
+            st.success(f"CSV importé : {len(uploaded_edited)} ligne(s) détectée(s).")
+            st.dataframe(uploaded_edited, use_container_width=True)
+        except Exception as e:
+            st.error(f"Erreur de lecture du CSV : {e}")
+            uploaded_edited = None
+
+    st.markdown("**Saisir le comptage (optionnel si CSV importé)**")
     template = pd.DataFrame({"SKU": [], "Compté": []})
-    edited = st.data_editor(
+    manual_edited = st.data_editor(
         template,
         num_rows="dynamic",
         use_container_width=True,
@@ -735,6 +810,9 @@ with tab_invent:
         },
         key="inv_editor",
     )
+
+    # On prend les données CSV si présentes, sinon la saisie manuelle
+    edited = uploaded_edited if uploaded_edited is not None else manual_edited
 
     c1, c2 = st.columns(2)
     calc = c1.button("Calculer les écarts", key="inv_calc")
@@ -774,6 +852,7 @@ with tab_invent:
                 st.success("Ajustements d'inventaire enregistrés")
             except Exception as e:
                 st.error(str(e))
+
 
 # ---- CLIENTS
 with tab_clients:
