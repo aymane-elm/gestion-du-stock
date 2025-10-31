@@ -722,98 +722,71 @@ with tab_invent:
     responsable_inv = st.selectbox("Responsable inventaire", resp_list, index=0)
     ref_inv = st.text_input("Référence d'inventaire", value=f"INV-{datetime.now():%Y%m%d}")
 
-    # --- Chargement du stock actuel
-    stock_df = get_stock()  # doit retourner au moins: sku, qty_on_hand
+    # Stock actuel (pour comparer)
+    stock_df = get_stock()  # colonnes attendues: sku, qty_on_hand
 
-    # --- (NOUVEAU) Import CSV
     st.markdown("**Importer un CSV**")
-    st.caption("Colonnes attendues : `SKU`, `Compté`. Les noms proches sont auto-reconnus (sku, counted, qte, etc.).")
+    st.caption("Colonnes attendues : `SKU`, `Compté` (les noms proches sont auto-reconnus : sku, qte, counted, ...).")
     csv_file = st.file_uploader("Choisir un fichier CSV", type=["csv"], key="inv_csv_uploader")
 
-    # Petite fonction pour lire intelligemment le CSV
+    # --- Helpers lecture & normalisation CSV
     def _read_csv_smart(file) -> pd.DataFrame:
         import io
+        # réinitialiser le curseur à chaque tentative
+        raw = file.read()
         for sep in [";", ",", "\t", "|"]:
             try:
-                df = pd.read_csv(io.BytesIO(file.read()), sep=sep)
-                if df.shape[1] >= 1:
-                    return df
+                return pd.read_csv(io.BytesIO(raw), sep=sep)
             except Exception:
-                file.seek(0)  # reset le curseur pour un prochain essai
                 continue
-        file.seek(0)
-        # dernier essai par défaut (virgule)
-        return pd.read_csv(file)
+        return pd.read_csv(io.BytesIO(raw))  # dernier essai
 
-    # Normaliser les colonnes vers ['SKU','Compté']
     def _coerce_inventory_df(df_raw: pd.DataFrame) -> pd.DataFrame:
         if df_raw is None or df_raw.empty:
             return pd.DataFrame(columns=["SKU", "Compté"])
         df = df_raw.copy()
         lower = {c.lower().strip(): c for c in df.columns}
 
-        # Candidats possibles pour SKU
+        # map SKU
         sku_col = None
         for c in ["sku", "code", "ref", "reference", "article", "id", "component_sku"]:
             if c in lower:
-                sku_col = lower[c]
-                break
-
-        # Candidats possibles pour quantité comptée
+                sku_col = lower[c]; break
+        # map Compté
         counted_col = None
         for c in ["compté", "compte", "counted", "count", "qte", "quantite", "quantité", "qty", "qty_counted", "qte_comptee", "qte_comptée"]:
             if c in lower:
-                counted_col = lower[c]
-                break
+                counted_col = lower[c]; break
 
         if not sku_col or not counted_col:
-            # si on ne trouve pas, on tente les noms exacts
             if "SKU" in df.columns and "Compté" in df.columns:
                 sku_col, counted_col = "SKU", "Compté"
             else:
-                st.error(
-                    "Colonnes non reconnues. Il faut au minimum des colonnes 'SKU' et 'Compté' "
-                    "(ou équivalents : sku, qte, counted, quantite, ...)."
-                )
+                st.error("Colonnes non reconnues. Il faut au minimum 'SKU' et 'Compté'.")
                 return pd.DataFrame(columns=["SKU", "Compté"])
 
         out = pd.DataFrame({
             "SKU": df[sku_col].astype(str),
-            "Compté": pd.to_numeric(df[counted_col], errors="coerce")
+            "Compté": pd.to_numeric(df[counted_col], errors="coerce").fillna(0.0),
         })
-        out["Compté"] = out["Compté"].fillna(0.0)
-        # on supprime les lignes vides de SKU
         out = out[out["SKU"].str.strip() != ""]
         return out
 
-    # Source des données de comptage : CSV (prioritaire) ou saisie manuelle
-    uploaded_edited = None
+    # --- Lecture du CSV
+    edited = None
     if csv_file is not None:
         try:
             raw = _read_csv_smart(csv_file)
-            uploaded_edited = _coerce_inventory_df(raw)
-            st.success(f"CSV importé : {len(uploaded_edited)} ligne(s) détectée(s).")
-            st.dataframe(uploaded_edited, use_container_width=True)
+            edited = _coerce_inventory_df(raw)
+            st.success(f"CSV importé : {len(edited)} ligne(s).")
+            st.dataframe(edited, use_container_width=True)
         except Exception as e:
             st.error(f"Erreur de lecture du CSV : {e}")
-            uploaded_edited = None
+            edited = None
+    else:
+        st.info("Importe un CSV pour calculer et valider les écarts.")
 
-    st.markdown("**Saisir le comptage (optionnel si CSV importé)**")
-    template = pd.DataFrame({"SKU": [], "Compté": []})
-    manual_edited = st.data_editor(
-        template,
-        num_rows="dynamic",
-        use_container_width=True,
-        column_config={
-            "SKU": st.column_config.SelectboxColumn(options=stock_df["sku"].astype(str).tolist()),
-            "Compté": st.column_config.NumberColumn(min_value=0.0, step=1.0),
-        },
-        key="inv_editor",
-    )
-
-    # On prend les données CSV si présentes, sinon la saisie manuelle
-    edited = uploaded_edited if uploaded_edited is not None else manual_edited
-
+    # --- Actions
     c1, c2 = st.columns(2)
     calc = c1.button("Calculer les écarts", key="inv_calc")
     valider = c2.button("Valider ajustements", key="inv_valid")
@@ -831,27 +804,33 @@ with tab_invent:
         return merged[["SKU", "Systeme", "Compté", "Ecart", "Sens"]]
 
     if calc:
-        diffs = compute_diffs(edited)
-        st.markdown("#### Écarts calculés")
-        st.dataframe(diffs, use_container_width=True)
+        if edited is None or edited.empty:
+            st.warning("Aucune donnée importée. Charge un CSV d’abord.")
+        else:
+            diffs = compute_diffs(edited)
+            st.markdown("#### Écarts calculés")
+            st.dataframe(diffs, use_container_width=True)
 
     if valider:
-        diffs = compute_diffs(edited)
-        if diffs.empty:
-            st.info("Aucune ligne à ajuster.")
+        if edited is None or edited.empty:
+            st.warning("Aucune donnée importée. Charge un CSV d’abord.")
         else:
-            try:
-                for r in diffs.itertuples(index=False):
-                    sku = r.SKU
-                    ecart = float(r.Ecart)
-                    if ecart == 0:
-                        continue
-                    move_type = "IN" if ecart > 0 else "OUT"
-                    qty = abs(ecart)
-                    record_movement_and_update(sku, move_type, qty, ref_inv, "INVENTAIRE", responsable_inv)
-                st.success("Ajustements d'inventaire enregistrés")
-            except Exception as e:
-                st.error(str(e))
+            diffs = compute_diffs(edited)
+            if diffs.empty:
+                st.info("Aucune ligne à ajuster.")
+            else:
+                try:
+                    for r in diffs.itertuples(index=False):
+                        sku = r.SKU
+                        ecart = float(r.Ecart)
+                        if ecart == 0:
+                            continue
+                        move_type = "IN" if ecart > 0 else "OUT"
+                        qty = abs(ecart)
+                        record_movement_and_update(sku, move_type, qty, ref_inv, "INVENTAIRE", responsable_inv)
+                    st.success("Ajustements d'inventaire enregistrés")
+                except Exception as e:
+                    st.error(str(e))
 
 
 # ---- CLIENTS
