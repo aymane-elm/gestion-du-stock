@@ -348,9 +348,9 @@ def to_csv_bytes(df: pd.DataFrame) -> bytes:
 # =========================
 
 # [REF:TABS-DEFINE]
-tab_dash, tab_moves, tab_mo, tab_stock, tab_invent, tab_clients, tab_export, tab_bom = st.tabs([
+tab_dash, tab_moves, tab_mo, tab_stock, tab_invent, tab_clients, tab_bom = st.tabs([
     "Dashboard", "Mouvements", "Ordres de fabrication", "Stock",
-    "Inventaire", "Clients", "Export CSV", "BOM GMQ"
+    "Inventaire", "Clients", "BOM GMQ"
 ])
 
 
@@ -931,77 +931,6 @@ with tab_clients:
                 st.rerun()
             except Exception as e:
                 st.error(f"Erreur lors de la suppression : {e}")
-
-# ---- EXPORT CSV
-with tab_export:
-    st.subheader("Exports CSV")
-
-    # Stock
-    st.markdown("### Export Stock")
-    stock_df = get_stock()
-    st.download_button(
-        "⬇️ Télécharger Stock (CSV)",
-        data=to_csv_bytes(stock_df),
-        file_name=f"stock_{datetime.now():%Y%m%d_%H%M%S}.csv",
-        mime="text/csv",
-        key="exp_stock_btn",
-    )
-
-    st.divider()
-
-    # Mouvements (avec filtres)
-    st.markdown("### Export Mouvements")
-    mv_all = fetch_df("SELECT MIN(date)::date AS dmin, MAX(date)::date AS dmax FROM mouvements")
-    default_from = (mv_all.get("dmin").iat[0] if not mv_all.empty else None) or (date.today() - timedelta(days=30))
-    default_to   = (mv_all.get("dmax").iat[0] if not mv_all.empty else None) or date.today()
-    c1, c2, c3 = st.columns(3)
-    d_from = c1.date_input("Du", value=default_from, key="exp_mv_from")
-    d_to   = c2.date_input("Au", value=default_to, key="exp_mv_to")
-    types = c3.multiselect("Type", options=["IN", "OUT"], default=["IN", "OUT"], key="exp_mv_types")
-    c4, c5 = st.columns(2)
-    sku_filter = c4.text_input("Filtre SKU", "", key="exp_mv_sku")
-    resp_opts = ["(Tous)"] + get_responsables()
-    resp_pick = c5.selectbox("Responsable", resp_opts, index=0, key="exp_mv_resp")
-
-    mv_exp = get_mouvements_filtered(d_from, d_to, types, sku_filter, resp_pick if resp_pick != "(Tous)" else None)
-    st.download_button(
-        "⬇️ Télécharger Mouvements filtrés (CSV)",
-        data=to_csv_bytes(mv_exp),
-        file_name=f"mouvements_{datetime.now():%Y%m%d_%H%M%S}.csv",
-        mime="text/csv",
-        key="exp_mv_btn",
-    )
-
-    st.divider()
-
-    # Fabrications (avec filtres)
-    st.markdown("### Export Fabrications")
-    fab_mm = fetch_df("SELECT MIN(date)::date AS dmin, MAX(date)::date AS dmax FROM fabrications")
-    default_f_from = (fab_mm.get("dmin").iat[0] if not fab_mm.empty else None) or (date.today() - timedelta(days=30))
-    default_f_to   = (fab_mm.get("dmax").iat[0] if not fab_mm.empty else None) or date.today()
-    f1, f2, f3 = st.columns(3)
-    f_from = f1.date_input("Du", value=default_f_from, key="exp_fab_from")
-    f_to   = f2.date_input("Au", value=default_f_to, key="exp_fab_to")
-    prod_pick = f3.multiselect("Produit", ["GMQ ONE", "GMQ LIVE"], default=["GMQ ONE", "GMQ LIVE"], key="exp_fab_prod")
-    f4, f5 = st.columns(2)
-   # === [REF:EXP-FAB-STATUS-OPTS] Statut pour Export Fabrications ===
-    df_status_exp = fetch_df(
-        "SELECT DISTINCT status AS status FROM fabrications WHERE status IS NOT NULL ORDER BY 1"
-    )
-    status_vals_exp = df_status_exp["status"].dropna().astype(str).tolist() if "status" in df_status_exp.columns else []
-    status_opts_exp = ["(Tous)"] + status_vals_exp
-    status_pick = f4.selectbox("Statut", status_opts_exp, index=0, key="exp_fab_status")
-
-    client_filter = f5.text_input("Client contient", "", key="exp_fab_client")
-
-    fab_exp = get_fabrications_filtered(f_from, f_to, prod_pick, status_pick if status_pick != "(Tous)" else None, client_filter)
-    st.download_button(
-        "⬇️ Télécharger Fabrications filtrées (CSV)",
-        data=to_csv_bytes(fab_exp),
-        file_name=f"fabrications_{datetime.now():%Y%m%d_%H%M%S}.csv",
-        mime="text/csv",
-        key="exp_fab_btn",
-    )
     
 
 
