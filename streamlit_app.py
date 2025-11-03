@@ -350,9 +350,9 @@ def to_csv_bytes(df: pd.DataFrame) -> bytes:
 # =========================
 
 # [REF:TABS-DEFINE]
-tab_dash, tab_moves, tab_mo, tab_stock, tab_invent, tab_clients, tab_bom = st.tabs([
+tab_dash, tab_moves, tab_mo, tab_stock, tab_invent, tab_clients, tab_bom, tab_importe = st.tabs([
     "Aperçu", "Mouvements", "Ordres de fabrication", "Stock",
-    "Inventaire", "Clients", "BOM GMQ"
+    "Inventaire", "Clients", "BOM GMQ", "Importer"
 ])
 
 
@@ -1156,5 +1156,74 @@ with tab_bom:
                 st.rerun()
         except Exception as e:
             st.error(f"Erreur lors de l’enregistrement : {e}")
+
+
+
+
+# ============ ONGLET IMPORTE ============== 
+with tab_importe:
+    st.header("Importation totale du stock")
+    st.caption("Importer un fichier Excel ou CSV pour REMPLACER/AJOUTER toute la table stock. Les colonnes suivantes sont OBLIGATOIRES : sku, name, unit, category, reorder_point, qty_on_hand, description.")
+
+    expected_cols = ["sku", "name", "unit", "category", "reorder_point", "qty_on_hand", "description"]
+
+    imp_file = st.file_uploader("Fichier Excel/CSV (stock complet)", ["csv", "xlsx"], key="stock_import_file")
+
+    def _read_excel_or_csv(file) -> pd.DataFrame:
+        import io
+        if file.name.endswith('.xlsx'):
+            return pd.read_excel(file)
+        else:
+            raw = file.read()
+            for sep in [";", ",", "\t", "|"]:
+                try:
+                    return pd.read_csv(io.BytesIO(raw), sep=sep)
+                except Exception:
+                    continue
+            return pd.read_csv(io.BytesIO(raw))
+
+    def _validate_cols_strict(df, expected):
+        cols_std = [c.strip().lower() for c in df.columns]
+        for c in expected:
+            if c not in cols_std:
+                st.error(f"Colonne OBLIGATOIRE manquante : '{c}'")
+                return False
+        return True
+
+    if imp_file:
+        try:
+            imp_raw = _read_excel_or_csv(imp_file)
+            df = imp_raw.rename(columns={c: c.lower().strip() for c in imp_raw.columns})
+            if _validate_cols_strict(df, expected_cols):
+                st.success(f"{len(df)} lignes lues. Prête à écraser/mettre à jour le stock.")
+                st.dataframe(df[expected_cols], use_container_width=True)
+                # Confirmer l'import
+                if st.button("Valider l'importation complète"):
+                    cpt_new, cpt_update = 0, 0
+                    skus_in_db = set(get_stock()["sku"].astype(str))
+                    for r in df[expected_cols].to_dict(orient="records"):
+                        sku = str(r["sku"])
+                        if sku in skus_in_db:
+                            # mise à jour toutes les colonnes
+                            executesql("""
+                                UPDATE stock SET
+                                    name=:name, unit=:unit, category=:category,
+                                    reorder_point=:reorder_point, qty_on_hand=:qty_on_hand,
+                                    description=:description
+                                WHERE sku=:sku
+                            """, r)
+                            cpt_update += 1
+                        else:
+                            add_stock_item(
+                                sku, r["name"], r["unit"], r["category"], r["reorder_point"], r["qty_on_hand"], r["description"]
+                            )
+                            cpt_new += 1
+                    st.success(f"Terminé. {cpt_update} produits MAJ, {cpt_new} nouveaux ajoutés.")
+            else:
+                st.error("Format incorrect, voir colonnes obligatoires.")
+        except Exception as e:
+            st.error(f"Erreur de lecture ou d'import : {e}")
+    else:
+        st.info(f"Importer un fichier avec colonnes : {', '.join(expected_cols)}.")
 
 
