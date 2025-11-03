@@ -465,8 +465,7 @@ def save_of_accessories(of_id: str, rows: list[dict]) -> int:
 
 # ---- ORDRES DE FABRICATION
 
-
-def executesql(sql: str, params: Dict[str, Any] = None) -> None:
+def executesql(sql: str, params: dict = None) -> None:
     with engine.begin() as conn:
         conn.execute(text(sql), params or {})
 
@@ -531,7 +530,6 @@ with tab_mo:
         )
         client_free = st.text_input("Nom du client (passage)", value="") if sel_client == "NEW" else None
 
-        # Accessoires
         default_accessory_name = accessory_by_product.get(product)
         mandatory_sku = next((sku for sku, name in acc_id_to_name.items() if name.lower() == default_accessory_name.lower()), None) if default_accessory_name else None
         options = [mandatory_sku] if mandatory_sku else []
@@ -553,7 +551,6 @@ with tab_mo:
         acc_qty = 1.0
 
         if (verify or post) and qty_make > 0:
-            # Vérification principal
             req_df, stock_ok = check_availability_sql(product, qty_make)
             st.markdown("#### Besoins vs stock (Produit fini)")
             st.dataframe(req_df, use_container_width=True)
@@ -565,7 +562,6 @@ with tab_mo:
             else:
                 st.success("Stock OK pour l'OF.")
 
-            # Vérification accessoire
             accessory_ok = True
             if acc_sku != "NONE":
                 accessory_check = check_accessory_availability(acc_sku, acc_qty, responsable, ref, due_date, sel_client)
@@ -584,8 +580,8 @@ with tab_mo:
                 elif sel_client not in ("NONE", "NEW"):
                     client_id = sel_client
                 try:
-                    # POST = déduction composants + statut "Post", PAS D'AJOUT STOCK PRODUIT
-                    mo_id = post_fabrication(product, qty_make, due_date, ref, responsable, client_id)  # <- à ajuster
+                    # Seule la sortie des composants est effectuée : produit fini ajouté lors de la validation
+                    mo_id = post_fabrication(product, qty_make, due_date, ref, responsable, client_id)
                     if acc_sku != "NONE" and accessory_check and accessory_check["source"] == "stock":
                         record_movement_and_update(acc_sku, "OUT", acc_qty, ref, "ACCESSOIRE", responsable)
                     if acc_sku != "NONE":
@@ -626,10 +622,8 @@ with tab_mo:
 
     # Validation OF, ajout produit fini au stock
     st.subheader("Valider une fabrication et ajouter au stock")
-    
-    # Attention ici : les colonnes exactes sont mo_id, product, qty, status, ref (trier par due_date ou date)
     fab_to_validate = fetch_df("SELECT mo_id, product, qty, status, ref FROM fabrications WHERE status = 'Posté' ORDER BY due_date ASC")
-    
+
     if not fab_to_validate.empty:
         st.dataframe(fab_to_validate, use_container_width=True)
         selected_moid = st.selectbox("OF à valider", fab_to_validate["mo_id"])
@@ -637,15 +631,15 @@ with tab_mo:
             try:
                 row = fab_to_validate[fab_to_validate["mo_id"] == selected_moid].iloc[0]
                 record_movement_and_update(row["product"], "IN", float(row["qty"]), row["ref"], "FABRICATION", responsable)
-                # Remplace executesql par :
                 with engine.begin() as conn:
-                    conn.execute(text("UPDATE fabrications SET status = 'Fait' WHERE mo_id = :moid"), {"moid": selected_moid})
+                    conn.execute(text("UPDATE fabrications SET status = 'Fait' WHERE mo_id = :mo_id"), {"mo_id": selected_moid})
                 st.success(f"OF {selected_moid} validé : {row['qty']} {row['product']} ajouté au stock.")
                 st.toast("Fabrication validée et stock mis à jour")
             except Exception as e:
                 st.error(f"Erreur validation fabrication : {e}")
     else:
         st.info("Aucun OF à valider actuellement.")
+
 
 
 
