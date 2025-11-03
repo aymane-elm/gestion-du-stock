@@ -587,8 +587,8 @@ with tab_mo:
                 elif sel_client not in ("NONE", "NEW"):
                     client_id = sel_client
                 try:
-                    # Ajout du code dans la base à la création
-                    mo_id = post_fabrication(product, qty_make, due_date, ref, responsable, client_id, of_code=of_code)
+                    mo_id = post_fabrication(product, qty_make, due_date, ref, responsable, client_id)
+                    executesql("UPDATE fabrications SET of_code = :of_code WHERE mo_id = :mo_id", {"of_code": of_code, "mo_id": mo_id})
                     if acc_sku != "NONE" and accessory_check and accessory_check["source"] == "stock":
                         record_movement_and_update(acc_sku, "OUT", acc_qty, ref, "ACCESSOIRE", responsable)
                     if acc_sku != "NONE":
@@ -603,7 +603,6 @@ with tab_mo:
                     st.error(str(e))
             elif post and not all_ok:
                 st.error("Vous ne pouvez pas poster l'OF : manque(s) produit fini ou accessoire.")
-
         elif (verify or post) and qty_make <= 0:
             st.error("La quantité à produire doit être > 0.")
 
@@ -650,13 +649,6 @@ with tab_mo:
                 st.error(f"Erreur validation fabrication : {e}")
     else:
         st.info("Aucun OF à valider actuellement.")
-
-
-
-
-
-
-
 
 
 # ---- STOCK
