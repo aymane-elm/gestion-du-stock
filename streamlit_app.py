@@ -857,6 +857,7 @@ with tab_invent:
                     st.error(str(e))
 
 
+
 # ---- CLIENTS
 with tab_clients:
     st.subheader("Clients")
