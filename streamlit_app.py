@@ -512,7 +512,7 @@ with tab_mo:
     stock_df = get_stock()
     acc_catalog = stock_df[stock_df["category"].str.lower().isin(["accessoire", "accessory", "accessoires", "accessories"])]
     accessory_by_product = {
-        "GMQ ONE": "Kit Batterie",
+        "GMQ-ONE": "Kit Batterie",
         "Antenne": "Rallonge"
     }
     acc_id_to_name = dict(zip(acc_catalog["sku"].astype(str), acc_catalog["name"]))
@@ -522,7 +522,7 @@ with tab_mo:
     st.subheader("Créer un OF")
     with st.form("mo_form"):
         col1, col2 = st.columns(2)
-        product = col1.selectbox("Produit fini", ["GMQ ONE", "GMQ LIVE", "Antenne"])
+        product = col1.selectbox("Produit fini", ["GMQ-ONE", "GMQ-LIVE", "Antenne"])
         responsable = col2.selectbox("Responsable", resp_list, index=0)
         col3, col4, col5 = st.columns([1, 1, 2])
         qty_make = col3.number_input("Quantité à produire", min_value=0.0, step=1.0)
