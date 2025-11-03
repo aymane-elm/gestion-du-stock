@@ -662,58 +662,89 @@ def to_excel_bytes(df):
 
 with tab_stock:
     st.header("Stock")
-    st.subheader("Ajouter ou modifier un article")
+    st.subheader("Ajouter un article")
 
-    stock_df = get_stock()
-    cat_choices = ["Composant", "Produit fini", "Accessoire"]
-
-    with st.form("stock_add_form"):
-        sku = st.text_input("SKU")
-        name = st.text_input("Nom / Désignation")
-        unit = st.text_input("Unité", value="pcs")
-        category = st.selectbox("Catégorie", cat_choices)
-        reorder_point = st.number_input("Point de commande", value=0.0, step=1.0)
-        qty_on_hand = st.number_input("Stock actuel (qty_on_hand)", value=0.0, step=1.0)
-        description = st.text_area("Description")
-        c1, c2 = st.columns(2)
-        add = c1.form_submit_button("Ajouter au stock")
-        update = c2.form_submit_button("Mettre à jour l'article (écrase tout)")
-
-        if add:
+    # LAYOUT COLONNES COMME AVANT
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with st.form(key="stock_add_form"):
+        sku = col1.text_input("SKU")
+        name = col2.text_input("Nom (libellé)")
+        unit = col3.text_input("Unité", value="pcs")
+        col4, col5 = st.columns([2, 1])
+        # Remplace l'input catégorie par un selectbox
+        cat_choices = ["Composant", "Produit fini", "Accessoire"]
+        category = col4.selectbox("Catégorie", cat_choices)
+        reorder_point = col5.number_input("Point de commande", value=0.0, step=1.0)
+        qty_on_hand = st.number_input("Stock initial", value=0.0, step=1.0)
+        description = st.text_area("Description", value="")
+        submit = st.form_submit_button("Ajouter au stock")
+        if submit:
             add_stock_item(sku, name, unit, category, reorder_point, qty_on_hand, description)
-            st.success(f"Article {sku} ajouté au stock.")
-
-        if update:
-            executesql(
-                """
-                UPDATE stock SET
-                    name=:name,
-                    unit=:unit,
-                    category=:category,
-                    reorder_point=:reorder_point,
-                    qty_on_hand=:qty_on_hand,
-                    description=:description
-                WHERE sku=:sku
-                """,
-                {
-                    "sku": sku,
-                    "name": name,
-                    "unit": unit,
-                    "category": category,
-                    "reorder_point": reorder_point,
-                    "qty_on_hand": qty_on_hand,
-                    "description": description
-                }
-            )
-            st.success(f"Article {sku} mis à jour.")
+            st.success(f"{sku} ajouté au stock avec la catégorie {category}.")
 
     st.divider()
-    st.subheader("Tableau du stock (lecture seule)")
+    st.subheader("Tableau du stock actuel")
+    stock_df = get_stock()
     if not stock_df.empty:
         st.dataframe(stock_df, use_container_width=True)
     else:
-        st.info("Aucun article en stock actuellement.")
+        st.info("Aucun produit en stock.")
 
+    edited = st.data_editor(
+        stock_df,
+        use_container_width=True,
+        num_rows="dynamic",
+        column_config={
+            "reorder_point": st.column_config.NumberColumn(step=1.0, min_value=0.0),
+            "qty_on_hand": st.column_config.NumberColumn(step=1.0, min_value=0.0),
+        },
+        key="stock_editor",
+    )
+
+    if st.button("💾 Enregistrer modifications du stock", key="stock_save_btn"):
+        try:
+            for r in edited.itertuples(index=False):
+                upsert_stock_row({
+                    "sku": r.sku, "name": r.name, "unit": r.unit, "category": r.category,
+                    "reorder_point": float(r.reorder_point or 0),
+                    "qty_on_hand": float(r.qty_on_hand or 0),
+                    "description": r.description,
+                })
+            st.success("Stock enregistré")
+            st.toast("Stock enregistré")
+        except Exception as e:
+            st.error(str(e))
+
+    st.divider()
+
+    st.subheader("Recherche & Export (stock)")
+    s1, s2, s3 = st.columns([1, 1, 2])
+    cats = ["(Toutes)"] + sorted([c for c in stock_df["category"].dropna().astype(str).unique().tolist()])
+    cat_pick = s1.selectbox("Catégorie", cats, index=0)
+    only_low = s2.checkbox("Sous seuil uniquement", value=False)
+    q_stock = s3.text_input("Recherche (SKU / Nom / Description)", "")
+
+    stock_view = stock_df.copy()
+    if cat_pick != "(Toutes)":
+        stock_view = stock_view[stock_view["category"].astype(str) == cat_pick]
+    if only_low:
+        stock_view = stock_view[stock_view["qty_on_hand"] < stock_view["reorder_point"]]
+    if q_stock.strip():
+        mask = (
+            stock_view["sku"].astype(str).str.contains(q_stock, case=False, na=False)
+            | stock_view["name"].astype(str).str.contains(q_stock, case=False, na=False)
+            | stock_view["description"].astype(str).str.contains(q_stock, case=False, na=False)
+        )
+        stock_view = stock_view[mask]
+
+    st.dataframe(stock_view, use_container_width=True)
+    st.download_button(
+        "⬇️ Télécharger (Excel)",
+        data=to_excel_bytes(stock_view),
+        file_name=f"stock_filtre_{datetime.now():%Y%m%d_%H%M%S}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="stock_export_btn_xlsx",
+    )
 
 
 
