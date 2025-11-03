@@ -757,12 +757,12 @@ with tab_invent:
     responsable_inv = st.selectbox("Responsable inventaire", resp_list, index=0)
     ref_inv = st.text_input("Référence d'inventaire", value=f"INV-{datetime.now():%Y%m%d}")
 
-    stock_df = get_stock()  # colonnes: sku, name, unit, category, reorder_point, qty_on_hand, description
+    stock_df = get_stock()
 
-    expected_cols = ["sku", "name", "unit", "category", "reorder_point", "qty_on_hand", "description"]
+    required_cols = ["sku", "qty_on_hand"]
 
-    st.markdown("**Importer un fichier Excel ou CSV (structure identique à la table de stock)**")
-    st.caption(f"Colonnes attendues : {', '.join(expected_cols)}")
+    st.markdown("**Importer un fichier Excel ou CSV**")
+    st.caption("Le fichier doit contenir au minimum les colonnes obligatoires : `sku` et `qty_on_hand`. Les autres colonnes seront utilisées si présentes.")
     inv_file = st.file_uploader("Choisir un fichier Excel ou CSV", type=["csv", "xlsx"], key="inv_file_uploader")
 
     def _read_excel_or_csv(file) -> pd.DataFrame:
@@ -780,7 +780,7 @@ with tab_invent:
 
     def _validate_inventory_cols(df: pd.DataFrame) -> bool:
         cols_std = [c.strip().lower() for c in df.columns]
-        for c in expected_cols:
+        for c in required_cols:
             if c not in cols_std:
                 st.error(f"Colonne obligatoire manquante : '{c}'")
                 return False
@@ -790,31 +790,38 @@ with tab_invent:
     if inv_file is not None:
         try:
             raw = _read_excel_or_csv(inv_file)
-            # Vérification stricte des colonnes
-            lower_cols = [c.lower().strip() for c in raw.columns]
-            df = raw.rename(columns={c: c.lower().strip() for c in raw.columns})
+            lower_cols = {c.lower().strip(): c for c in raw.columns}
+            df = raw.rename(columns={orig: low for low, orig in lower_cols.items()})
             if _validate_inventory_cols(df):
-                st.success(f"Fichier importé : {len(df)} lignes.")
-                st.dataframe(df[expected_cols], use_container_width=True)
-                edited = df[expected_cols].copy()
+                st.success(f"Fichier importé : {len(df)} lignes.")
+                st.dataframe(df, use_container_width=True)
+                edited = df.copy()
             else:
                 edited = None
         except Exception as e:
             st.error(f"Erreur de lecture du fichier : {e}")
             edited = None
     else:
-        st.info("Importe un fichier Excel ou CSV de structure identique à la table de stock.")
+        st.info("Importe un fichier Excel ou CSV, structure minimale : 'sku' et 'qty_on_hand'.")
 
-    # --- Actions (ajouts nouveaux + maj qty_on_hand)
     if edited is not None and not edited.empty:
         stock_skus = set(stock_df["sku"].astype(str))
         edited["sku"] = edited["sku"].astype(str)
 
-        # Ajouter nouveaux composants sur base de toutes les colonnes sauf qty_on_hand
+        # Pour les nouveaux composants, on prend les infos du fichier si dispo, sinon valeur par défaut
+        def safe_val(row, k, default):
+            return row[k] if k in row and pd.notnull(row[k]) else default
+
         new_lines = edited[~edited["sku"].isin(stock_skus)]
-        for r in new_lines.itertuples(index=False):
+        for _, r in new_lines.iterrows():
             add_stock_item(
-                r.sku, r.name, r.unit, r.category, r.reorder_point, float(r.qty_on_hand), r.description
+                r["sku"],
+                r["name"] if "name" in r else r["sku"],
+                r["unit"] if "unit" in r else "pcs",
+                r["category"] if "category" in r else "Inventaire",
+                float(r["reorder_point"]) if "reorder_point" in r and pd.notnull(r["reorder_point"]) else 0.,
+                float(r["qty_on_hand"]),
+                r["description"] if "description" in r else ""
             )
         if len(new_lines) > 0:
             st.success(f"{len(new_lines)} nouveaux produits ajoutés au stock.")
@@ -855,6 +862,7 @@ with tab_invent:
                     st.success("Ajustements d'inventaire enregistrés")
                 except Exception as e:
                     st.error(str(e))
+
 
 
 
