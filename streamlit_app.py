@@ -628,7 +628,7 @@ with tab_mo:
     st.subheader("Valider une fabrication et ajouter au stock")
     
     # Attention ici : les colonnes exactes sont mo_id, product, qty, status, ref (trier par due_date ou date)
-    fab_to_validate = fetch_df("SELECT mo_id, product, qty, status, ref FROM fabrications WHERE status = 'Post' ORDER BY due_date ASC")
+    fab_to_validate = fetch_df("SELECT mo_id, product, qty, status, ref FROM fabrications WHERE status = 'Posté' ORDER BY due_date ASC")
     
     if not fab_to_validate.empty:
         st.dataframe(fab_to_validate, use_container_width=True)
