@@ -265,7 +265,7 @@ def get_bom(product: str) -> pd.DataFrame:
     elif product == "GMQ LIVE":
         return fetch_df(
             "SELECT component_sku AS componentsku, qty_per_unit AS qtyperunit, description FROM bom_gmq_live")
-    elif product == "antenne":
+    elif product == "Antenne":
         return fetch_df("SELECT component_sku AS componentsku, qty_per_unit AS qtyperunit, description FROM bom_antenne")
     else:
         raise ValueError("Produit inconnu")
@@ -481,7 +481,7 @@ with tab_mo:
     with st.form("mo_form"):
         # Saisie principale
         col1, col2 = st.columns(2)
-        product = col1.selectbox("Produit fini", ["GMQ ONE", "GMQ LIVE"])
+        product = col1.selectbox("Produit fini", ["GMQ ONE", "GMQ LIVE", "Antenne"])
         responsable = col2.selectbox("Responsable", resp_list, index=0)
         col3, col4, col5 = st.columns([1, 1, 2])
         qty_make = col3.number_input("Quantité à produire", min_value=0.0, step=1.0)
