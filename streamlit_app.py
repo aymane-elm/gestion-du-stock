@@ -264,8 +264,9 @@ def get_bom(product: str) -> pd.DataFrame:
         )
     elif product == "GMQ LIVE":
         return fetch_df(
-            "SELECT component_sku AS componentsku, qty_per_unit AS qtyperunit, description FROM bom_gmq_live"
-        )
+            "SELECT component_sku AS componentsku, qty_per_unit AS qtyperunit, description FROM bom_gmq_live")
+    elif product == "antenne":
+        return fetch_df("SELECT component_sku AS componentsku, qty_per_unit AS qtyperunit, description FROM bom_antenne")
     else:
         raise ValueError("Produit inconnu")
 
@@ -466,7 +467,7 @@ def save_of_accessories(of_id: str, rows: list[dict]) -> int:
 # ---- ORDRES DE FABRICATION
 with tab_mo:
     st.header("Ordres de fabrication")
-    resp_list = get_responsables() or ["Aymane", "Joslain", "Lise", "Robin"]
+    resp_list = get_responsables() 
     clients_df = get_clients()
     acc_catalog = get_accessory_catalog()
 
