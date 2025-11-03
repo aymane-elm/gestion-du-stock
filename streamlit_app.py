@@ -466,6 +466,9 @@ def save_of_accessories(of_id: str, rows: list[dict]) -> int:
 # ---- ORDRES DE FABRICATION
 
 
+def executesql(sql: str, params: Dict[str, Any] = None) -> None:
+    with engine.begin() as conn:
+        conn.execute(text(sql), params or {})
 
 def get_qty_available(sku):
     stock = get_stock()
