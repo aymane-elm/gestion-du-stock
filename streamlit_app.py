@@ -469,7 +469,9 @@ with tab_mo:
     st.header("Ordres de fabrication")
     resp_list = get_responsables()
     clients_df = get_clients()
-    acc_catalog = get_accessory_catalog()
+    
+    stock_df = get_stock()
+    acc_catalog = stock_df[stock_df["category"].str.lower().isin(["accessoire", "accessory", "accessoires", "accessories"])]
     
     accessory_by_product = {
         "GMQ ONE": "Kit batterie",
@@ -477,8 +479,8 @@ with tab_mo:
         "GMQ LIVE": None
     }
 
-    acc_id_to_name = dict(zip(acc_catalog["id"].astype(str), acc_catalog["item_name"]))
-    acc_id_to_unit = dict(zip(acc_catalog["id"].astype(str), acc_catalog["unit"]))
+    acc_id_to_name = dict(zip(acc_catalog["sku"].astype(str), acc_catalog["name"]))
+    acc_id_to_unit = dict(zip(acc_catalog["sku"].astype(str), acc_catalog["unit"]))
     client_opts = {str(r.id): str(r.client_name) for r in clients_df.itertuples(index=False)} if not clients_df.empty else {}
     client_opts = {"NONE": "(aucun)", **client_opts, "NEW": "Client de passage (saisie)"}
 
@@ -507,7 +509,7 @@ with tab_mo:
         options = []
         if mandatory_sku:
             options.append(mandatory_sku)
-        options += [sku for sku in acc_catalog["id"].astype(str).tolist() if sku != mandatory_sku]
+        options += [sku for sku in acc_catalog["sku"].astype(str).tolist() if sku != mandatory_sku]
         options.append("NONE")
 
         selected_acc = st.selectbox(
@@ -517,7 +519,7 @@ with tab_mo:
             index=0
         )
 
-        # Crée le DataFrame accessoire
+        # Créer le dataframe accessoire pour édition (toujours mono-accessoire ou aucun)
         if selected_acc == "NONE":
             acc_rows = []
         else:
@@ -573,7 +575,7 @@ with tab_mo:
                 try:
                     mo_id = post_fabrication(product, qty_make, due_date, ref, responsable, client_id)
 
-                    # Enregistrer l'accessoire obligatoire/choisi
+                    # Enregistrer l'accessoire obligatoire ou choisi
                     work = acc_df[acc_df["component_sku"] != "NONE"]
                     rows = [{
                         "component_sku": str(r["component_sku"]),
@@ -610,6 +612,7 @@ with tab_mo:
         f_from, f_to, prod_pick, None if status_pick == "(Tous)" else status_pick, client_filter
     )
     st.dataframe(fab_view, use_container_width=True)
+
 
 
 
