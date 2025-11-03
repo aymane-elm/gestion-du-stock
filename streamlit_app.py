@@ -470,30 +470,28 @@ def save_of_accessories(of_id: str, rows: list[dict]) -> int:
 def get_qty_available(sku):
     stock = get_stock()
     hit = stock[stock["sku"] == sku]
-    if not hit.empty:
-        return float(hit.iloc[0]["qty_on_hand"])
-    return 0.0
+    return float(hit.iloc[0]["qty_on_hand"]) if not hit.empty else 0.0
+
+def get_bom_table_for_accessory(sku):
+    # Adaptation selon nomenclature connue (évolutive si d'autres accessoires ajoutés)
+    table_map = {
+        "KT BTT": "bom_kit_batterie",
+        "RLNG": "bom_rallonge",
+    }
+    return table_map.get(sku, f"bom_{sku.replace(' ', '_').lower()}")
 
 def check_accessory_availability(sku, qty, responsable, ref, due_date, client_id):
-    # 1. Vérifier stock direct
-    qty_in_stock = get_qty_available(sku)
-    if qty_in_stock >= qty:
-        return {"ok": True, "source": "stock", "message": f"{sku} en stock ({qty_in_stock}), retrait {qty} possible"}
-    # 2. Sinon, try assemblage via BOM
+    stock_qty = get_qty_available(sku)
+    if stock_qty >= qty:
+        return {"ok": True, "source": "stock", "message": f"{sku} en stock ({stock_qty}), retrait {qty} possible"}
     try:
-        bom_table = f"bom_{sku.replace(' ','_')}"
+        bom_table = get_bom_table_for_accessory(sku)
         bom_acc = fetch_df(f"SELECT component_sku, qty_per_unit FROM {bom_table}")
-        missing = []
-        ok = True
-        for _, row in bom_acc.iterrows():
-            comp_sku = row["component_sku"]
-            comp_need = float(row["qty_per_unit"]) * qty
-            comp_disp = get_qty_available(comp_sku)
-            if comp_disp < comp_need:
-                missing.append(f"{comp_sku} (manque {comp_need - comp_disp})")
-                ok = False
-        if ok:
-            # Suffisant pour assembler
+        missing = [
+            f"{row['component_sku']} (manque {float(row['qty_per_unit']) * qty - get_qty_available(row['component_sku'])})"
+            for _, row in bom_acc.iterrows() if get_qty_available(row['component_sku']) < float(row['qty_per_unit']) * qty
+        ]
+        if not missing:
             sub_of_id = post_fabrication(sku, qty, due_date, f"SO-{ref}", responsable, client_id)
             return {"ok": True, "source": "assembly", "message": f"Sous-OF {sku} créé (OF: {sub_of_id})"}
         else:
@@ -509,13 +507,11 @@ with tab_mo:
     acc_catalog = stock_df[stock_df["category"].str.lower().isin(["accessoire", "accessory", "accessoires", "accessories"])]
     accessory_by_product = {
         "GMQ ONE": "Kit Batterie",
-        "Antenne": "Rallonge",
-        "GMQ LIVE": None
+        "Antenne": "Rallonge"
     }
     acc_id_to_name = dict(zip(acc_catalog["sku"].astype(str), acc_catalog["name"]))
     acc_id_to_unit = dict(zip(acc_catalog["sku"].astype(str), acc_catalog["unit"]))
-    client_opts = {str(r.id): str(r.client_name) for r in clients_df.itertuples(index=False)} if not clients_df.empty else {}
-    client_opts = {"NONE": "(aucun)", **client_opts, "NEW": "Client de passage (saisie)"}
+    client_opts = {"NONE": "(aucun)", **{str(r.id): str(r.client_name) for r in clients_df.itertuples(index=False)}, "NEW": "Client de passage (saisie)"}
 
     st.subheader("Créer un OF")
     with st.form("mo_form"):
@@ -526,98 +522,58 @@ with tab_mo:
         qty_make = col3.number_input("Quantité à produire", min_value=0.0, step=1.0)
         due_date = col4.date_input("Date d'échéance", value=date.today() + timedelta(days=7))
         ref = col5.text_input("Référence OF", value="OF-AUTO")
+
         sel_client = st.selectbox(
             "Client associé", options=list(client_opts.keys()), index=0,
             format_func=lambda k: client_opts[k]
         )
         client_free = st.text_input("Nom du client (passage)", value="") if sel_client == "NEW" else None
-        default_accessory_name = accessory_by_product.get(product)
-        mandatory_sku = None
-        if default_accessory_name:
-            mandatory_sku = next((sku for sku, name in acc_id_to_name.items() if name.lower() == default_accessory_name.lower()), None)
 
-        options = []
-        if mandatory_sku:
-            options.append(mandatory_sku)
+        # Sélection et référentiel des accessoires
+        default_accessory_name = accessory_by_product.get(product)
+        mandatory_sku = next((sku for sku, name in acc_id_to_name.items() if name.lower() == default_accessory_name.lower()), None) if default_accessory_name else None
+        options = [mandatory_sku] if mandatory_sku else []
         options += [sku for sku in acc_catalog["sku"].astype(str).tolist() if sku != mandatory_sku]
         options.append("NONE")
 
         selected_acc = st.selectbox(
             "Accessoire à inclure dans l'OF (obligatoire)",
             options=options,
-            format_func=lambda k: acc_id_to_name[k] if k in acc_id_to_name else ("Ne pas inclure d'accessoire" if k == "NONE" else k),
+            format_func=lambda k: acc_id_to_name.get(k, "Ne pas inclure d'accessoire") if k != "NONE" else "Ne pas inclure d'accessoire",
             index=0
-        )
-
-        # Dataframe accessoire pour édition
-        if selected_acc == "NONE":
-            acc_rows = []
-        else:
-            acc_rows = [{
-                "component_sku": selected_acc,
-                "item_name": acc_id_to_name[selected_acc],
-                "unit": acc_id_to_unit.get(selected_acc, ""),
-                "qty": 1.0,
-                "notes": ""
-            }]
-
-        acc_df = pd.DataFrame(acc_rows, columns=["component_sku", "item_name", "unit", "qty", "notes"])
-        st.data_editor(
-            acc_df,
-            num_rows="dynamic",
-            use_container_width=True,
-            column_config={
-                "component_sku": st.column_config.TextColumn("SKU"),
-                "item_name": st.column_config.TextColumn("Nom", disabled=True),
-                "unit": st.column_config.TextColumn("Unité", disabled=True),
-                "qty": st.column_config.NumberColumn("Quantité", min_value=0.0, step=0.1),
-                "notes": st.column_config.TextColumn("Notes")
-            },
-            key="of_acc_editor_form"
         )
 
         cver, cpost = st.columns(2)
         verify = cver.form_submit_button("Vérifier l'OF")
         post = cpost.form_submit_button("Poster l'OF")
 
-        # -------- VÉRIFICATION PRODUIT FINI + ACCESSOIRE --------
-        accessory_check = None
-        accessory_message = None
         acc_sku = selected_acc
         acc_qty = 1.0
 
         if (verify or post) and qty_make > 0:
-            # 1. Vérification produit principal
+            # Vérification principal
             req_df, stock_ok = check_availability_sql(product, qty_make)
             st.markdown("#### Besoins vs stock (Produit fini)")
             st.dataframe(req_df, use_container_width=True)
-
-            msg_ko_main = ""
             if not stock_ok:
                 manques = req_df.loc[req_df["Manque"] > 0, ["ComponentSKU", "Manque"]]
-                noms_manques = ", ".join([
-                    f"{r.ComponentSKU} (-{r.Manque:.0f})" if float(r.Manque).is_integer() else f"{r.ComponentSKU} (-{r.Manque})"
-                    for r in manques.itertuples()
-                ])
-                msg_ko_main = f"Stock insuffisant. Composants manquants : {noms_manques}"
-                st.error(msg_ko_main)
+                st.error(f"Stock insuffisant. Composants manquants : " +
+                         ", ".join([f"{r.ComponentSKU} (-{r.Manque:.0f})" if float(r.Manque).is_integer() else f"{r.ComponentSKU} (-{r.Manque})"
+                         for r in manques.itertuples()]))
             else:
                 st.success("Stock OK pour l'OF.")
 
-            # 2. Vérification accessoire
+            # Vérification accessoire
             accessory_ok = True
-            accessory_message = None
             if acc_sku != "NONE":
                 accessory_check = check_accessory_availability(acc_sku, acc_qty, responsable, ref, due_date, sel_client)
                 accessory_ok = accessory_check["ok"]
-                accessory_message = accessory_check["message"]
                 if accessory_ok:
-                    st.success(f"Accessoire OK : {accessory_message}")
+                    st.success(f"Accessoire OK : {accessory_check['message']}")
                 else:
-                    st.error(f"Accessoire NOK : {accessory_message}")
+                    st.error(f"Accessoire NOK : {accessory_check['message']}")
 
-            # Blocage si l'un ou l'autre est KO
-            all_ok = stock_ok and (selected_acc == "NONE" or accessory_ok)
+            all_ok = stock_ok and (acc_sku == "NONE" or accessory_ok)
 
             if post and all_ok:
                 client_id = None
@@ -625,26 +581,18 @@ with tab_mo:
                     client_id = insert_client_return_id(client_free.strip(), ctype="Passage") if client_free else None
                 elif sel_client not in ("NONE", "NEW"):
                     client_id = sel_client
-
                 try:
                     mo_id = post_fabrication(product, qty_make, due_date, ref, responsable, client_id)
-
                     # Soustraction accessoire si dispo stock direct
-                    if accessory_check:
-                        if accessory_check["source"] == "stock":
-                            record_movement_and_update(acc_sku, "OUT", acc_qty, ref, "ACCESSOIRE", responsable)
-
-                    # Enregistrement accessoire
-                    work = acc_df[acc_df["component_sku"] != "NONE"]
-                    rows = [{
-                        "component_sku": str(r["component_sku"]),
-                        "qty": float(r["qty"]),
-                        "notes": str(r.get("notes", "") or "")
-                    } for _, r in work.iterrows()]
-
-                    if rows:
-                        save_of_accessories(mo_id, rows)
-
+                    if acc_sku != "NONE" and accessory_check and accessory_check["source"] == "stock":
+                        record_movement_and_update(acc_sku, "OUT", acc_qty, ref, "ACCESSOIRE", responsable)
+                    # Enregistrement accessoire (liaison OF/accessoires)
+                    if acc_sku != "NONE":
+                        save_of_accessories(mo_id, [{
+                            "component_sku": acc_sku,
+                            "qty": acc_qty,
+                            "notes": ""
+                        }])
                     st.success(f"OF {mo_id} posté par {responsable} (échéance {due_date:%Y-%m-%d}).")
                     st.toast("OF posté")
                 except Exception as e:
@@ -655,7 +603,26 @@ with tab_mo:
         elif (verify or post) and qty_make <= 0:
             st.error("La quantité à produire doit être > 0.")
 
-    # Suite de la liste des OF etc. inchangée ...
+    st.divider()
+    st.subheader("Liste des ordres de fabrication")
+    fab_mm = fetch_df("SELECT MIN(date)::date AS dmin, MAX(date)::date AS dmax FROM fabrications")
+    default_f_from = (fab_mm.get("dmin").iat[0] if not fab_mm.empty else None) or (date.today() - timedelta(days=30))
+    default_f_to = (fab_mm.get("dmax").iat[0] if not fab_mm.empty else None) or date.today()
+    f1, f2, f3 = st.columns(3)
+    f_from = f1.date_input("Du", value=default_f_from, key="fab_list_from")
+    f_to = f2.date_input("Au", value=default_f_to, key="fab_list_to")
+    prod_pick = f3.multiselect("Produit", ["GMQ ONE", "GMQ LIVE", "Antenne"], default=["GMQ ONE", "GMQ LIVE", "Antenne"], key="fab_list_prod")
+
+    f4, f5 = st.columns(2)
+    status_opts = ["(Tous)"] + fetch_df("SELECT DISTINCT status FROM fabrications WHERE status IS NOT NULL ORDER BY 1")["status"].astype(str).tolist()
+    status_pick = f4.selectbox("Statut", status_opts, index=0, key="fab_list_status")
+    client_filter = f5.text_input("Client contient", "", key="fab_list_client")
+
+    fab_view = get_fabrications_filtered(
+        f_from, f_to, prod_pick, None if status_pick == "(Tous)" else status_pick, client_filter
+    )
+    st.dataframe(fab_view, use_container_width=True)
+
 
 
 
