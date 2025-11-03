@@ -585,7 +585,7 @@ with tab_mo:
                     client_id = sel_client
                 try:
                     # POST = déduction composants + statut "Post", PAS D'AJOUT STOCK PRODUIT
-                    mo_id = post_fabrication(product, qty_make, due_date, ref, responsable, client_id, add_product_to_stock=False)  # <- à ajuster
+                    mo_id = post_fabrication(product, qty_make, due_date, ref, responsable, client_id)  # <- à ajuster
                     if acc_sku != "NONE" and accessory_check and accessory_check["source"] == "stock":
                         record_movement_and_update(acc_sku, "OUT", acc_qty, ref, "ACCESSOIRE", responsable)
                     if acc_sku != "NONE":
