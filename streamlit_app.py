@@ -736,7 +736,7 @@ with tab_invent:
     stock_df = get_stock()  # colonnes attendues: sku, qty_on_hand
 
     st.markdown("**Importer un fichier Excel ou CSV**")
-    st.caption("Colonnes attendues : `SKU`, `Compté` ...")
+    st.caption("Colonnes attendues : `SKU`, `qty_on_hand` ...")
     inv_file = st.file_uploader("Choisir un fichier Excel ou CSV", type=["csv", "xlsx"], key="inv_file_uploader")
 
     # --- Helpers lecture & normalisation CSV
@@ -756,7 +756,7 @@ with tab_invent:
 
     def _coerce_inventory_df(df_raw: pd.DataFrame) -> pd.DataFrame:
         if df_raw is None or df_raw.empty:
-            return pd.DataFrame(columns=["SKU", "Compté"])
+            return pd.DataFrame(columns=["SKU", "qty_on_hand"])
         df = df_raw.copy()
         lower = {c.lower().strip(): c for c in df.columns}
 
@@ -767,20 +767,20 @@ with tab_invent:
                 sku_col = lower[c]; break
         # map Compté
         counted_col = None
-        for c in ["compté", "compte", "counted", "count", "qte", "quantite", "quantité", "qty", "qty_counted", "qte_comptee", "qte_comptée"]:
+        for c in ["compté", "compte", "counted", "count", "qte", "quantite", "quantité", "qty", "qty_counted", "qte_comptee", "qte_comptée", "qty_on_hand"]:
             if c in lower:
                 counted_col = lower[c]; break
 
         if not sku_col or not counted_col:
             if "SKU" in df.columns and "Compté" in df.columns:
-                sku_col, counted_col = "SKU", "Compté"
+                sku_col, counted_col = "SKU", "qty_on_hand"
             else:
-                st.error("Colonnes non reconnues. Il faut au minimum 'SKU' et 'Compté'.")
-                return pd.DataFrame(columns=["SKU", "Compté"])
+                st.error("Colonnes non reconnues. Il faut au minimum 'SKU' et 'qty_on_hand'.")
+                return pd.DataFrame(columns=["SKU", "qty_on_hand"])
 
         out = pd.DataFrame({
             "SKU": df[sku_col].astype(str),
-            "Compté": pd.to_numeric(df[counted_col], errors="coerce").fillna(0.0),
+            "qty_on_hand": pd.to_numeric(df[counted_col], errors="coerce").fillna(0.0),
         })
         out = out[out["SKU"].str.strip() != ""]
         return out
@@ -806,7 +806,7 @@ with tab_invent:
         stock_skus = set(stock_df["sku"].astype(str))
         new_lines = edited[~edited["SKU"].isin(stock_skus)]
         for r in new_lines.itertuples(index=False):
-            add_stock_item(r.SKU, r.SKU, "pcs", "Inventaire", 0., float(r.Compté), "Ajout inventaire")  # adapter si besoin
+            add_stock_item(r.SKU, r.SKU, "pcs", "Inventaire", 0., float(r.qty_on_hand), "Ajout inventaire")  # adapter si besoin
         if len(new_lines) > 0:
             st.success(f"{len(new_lines)} nouveaux produits ajoutés au stock.")
 
@@ -821,10 +821,10 @@ with tab_invent:
         ed2 = ed.copy()
         ed2["SKU"] = ed2["SKU"].astype(str)
         merged = ed2.merge(sm, on="SKU", how="left").fillna({"Systeme": 0.0})
-        merged["Compté"] = pd.to_numeric(merged["Compté"], errors="coerce").fillna(0.0)
-        merged["Ecart"] = merged["Compté"] - merged["Systeme"]
+        merged["qty_on_hand"] = pd.to_numeric(merged["qty_on_hand"], errors="coerce").fillna(0.0)
+        merged["Ecart"] = merged["qty_on_hand"] - merged["Systeme"]
         merged["Sens"] = np.where(merged["Ecart"] >= 0, "IN", "OUT")
-        return merged[["SKU", "Systeme", "Compté", "Ecart", "Sens"]]
+        return merged[["SKU", "Systeme", "qty_on_hand", "Ecart", "Sens"]]
 
     if calc:
         if edited is None or edited.empty:
