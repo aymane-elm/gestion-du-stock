@@ -474,7 +474,7 @@ with tab_mo:
     acc_catalog = stock_df[stock_df["category"].str.lower().isin(["accessoire", "accessory", "accessoires", "accessories"])]
     
     accessory_by_product = {
-        "GMQ ONE": "Kit batterie",
+        "GMQ ONE": "KT BTT",
         "Antenne": "Rallonge",
         "GMQ LIVE": None
     }
