@@ -481,6 +481,11 @@ def get_bom_table_for_accessory(sku):
     }
     return table_map.get(sku, f"bom_{sku.replace(' ', '_').lower()}")
 
+def generate_of_code():
+    today_str = date.today().strftime("%Y%m%d")
+    count = fetch_df("SELECT COUNT(*) AS c FROM fabrications WHERE of_code LIKE :like", {"like": f"OF-{today_str}-%"}).iloc[0]["c"]
+    return f"OF-{today_str}-{count+1:03d}"
+
 def check_accessory_availability(sku, qty, responsable, ref, due_date, client_id):
     stock_qty = get_qty_available(sku)
     if stock_qty >= qty:
@@ -522,7 +527,9 @@ with tab_mo:
         col3, col4, col5 = st.columns([1, 1, 2])
         qty_make = col3.number_input("Quantité à produire", min_value=0.0, step=1.0)
         due_date = col4.date_input("Date d'échéance", value=date.today() + timedelta(days=7))
-        ref = col5.text_input("Référence OF", value="OF-AUTO")
+
+        of_code = generate_of_code()
+        ref = col5.text_input("Référence OF", value=of_code)
 
         sel_client = st.selectbox(
             "Client associé", options=list(client_opts.keys()), index=0,
@@ -580,8 +587,8 @@ with tab_mo:
                 elif sel_client not in ("NONE", "NEW"):
                     client_id = sel_client
                 try:
-                    # Seule la sortie des composants est effectuée : produit fini ajouté lors de la validation
-                    mo_id = post_fabrication(product, qty_make, due_date, ref, responsable, client_id)
+                    # Ajout du code dans la base à la création
+                    mo_id = post_fabrication(product, qty_make, due_date, ref, responsable, client_id, of_code=of_code)
                     if acc_sku != "NONE" and accessory_check and accessory_check["source"] == "stock":
                         record_movement_and_update(acc_sku, "OUT", acc_qty, ref, "ACCESSOIRE", responsable)
                     if acc_sku != "NONE":
@@ -590,7 +597,7 @@ with tab_mo:
                             "qty": acc_qty,
                             "notes": ""
                         }])
-                    st.success(f"OF {mo_id} posté par {responsable} (échéance {due_date:%Y-%m-%d}) (ajout stock à valider après réalisation).")
+                    st.success(f"OF {of_code} posté par {responsable} (échéance {due_date:%Y-%m-%d}) (ajout stock à valider après réalisation).")
                     st.toast("OF posté")
                 except Exception as e:
                     st.error(str(e))
@@ -609,31 +616,35 @@ with tab_mo:
     f_from = f1.date_input("Du", value=default_f_from, key="fab_list_from")
     f_to = f2.date_input("Au", value=default_f_to, key="fab_list_to")
     prod_pick = f3.multiselect("Produit", ["GMQ ONE", "GMQ LIVE", "Antenne"], default=["GMQ ONE", "GMQ LIVE", "Antenne"], key="fab_list_prod")
-
     f4, f5 = st.columns(2)
     status_opts = ["(Tous)"] + fetch_df("SELECT DISTINCT status FROM fabrications WHERE status IS NOT NULL ORDER BY 1")["status"].astype(str).tolist()
     status_pick = f4.selectbox("Statut", status_opts, index=0, key="fab_list_status")
     client_filter = f5.text_input("Client contient", "", key="fab_list_client")
-
     fab_view = get_fabrications_filtered(
         f_from, f_to, prod_pick, None if status_pick == "(Tous)" else status_pick, client_filter
     )
-    st.dataframe(fab_view, use_container_width=True)
+    if not fab_view.empty and "of_code" in fab_view.columns:
+        st.dataframe(fab_view[["of_code", "date", "due_date", "product", "qty", "status", "ref"]].rename(columns={"of_code": "Identifiant OF"}), use_container_width=True)
+    else:
+        st.dataframe(fab_view, use_container_width=True)
 
     # Validation OF, ajout produit fini au stock
     st.subheader("Valider une fabrication et ajouter au stock")
-    fab_to_validate = fetch_df("SELECT mo_id, product, qty, status, ref FROM fabrications WHERE status = 'Posté' ORDER BY due_date ASC")
-
+    fab_to_validate = fetch_df("SELECT mo_id, of_code, product, qty, status, ref FROM fabrications WHERE status = 'Posté' ORDER BY due_date ASC")
     if not fab_to_validate.empty:
-        st.dataframe(fab_to_validate, use_container_width=True)
-        selected_moid = st.selectbox("OF à valider", fab_to_validate["mo_id"])
+        st.dataframe(fab_to_validate.rename(columns={"of_code": "Identifiant OF"}), use_container_width=True)
+        selected_row = st.selectbox(
+            "OF à valider",
+            fab_to_validate.itertuples(index=False),
+            format_func=lambda r: f"{r.of_code} - {r.product} ({r.qty})"
+        )
         if st.button("Valider fabrication et ajouter au stock", key="validate_of_btn"):
             try:
-                row = fab_to_validate[fab_to_validate["mo_id"] == selected_moid].iloc[0]
-                record_movement_and_update(row["product"], "IN", float(row["qty"]), row["ref"], "FABRICATION", responsable)
+                row = selected_row
+                record_movement_and_update(row.product, "IN", float(row.qty), row.ref, "FABRICATION", responsable)
                 with engine.begin() as conn:
-                    conn.execute(text("UPDATE fabrications SET status = 'Fait' WHERE mo_id = :mo_id"), {"mo_id": selected_moid})
-                st.success(f"OF {selected_moid} validé : {row['qty']} {row['product']} ajouté au stock.")
+                    conn.execute(text("UPDATE fabrications SET status = 'Fait' WHERE mo_id = :mo_id"), {"mo_id": row.mo_id})
+                st.success(f"OF {row.of_code} validé : {row.qty} {row.product} ajouté au stock.")
                 st.toast("Fabrication validée et stock mis à jour")
             except Exception as e:
                 st.error(f"Erreur validation fabrication : {e}")
