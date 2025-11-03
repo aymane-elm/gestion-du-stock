@@ -2,6 +2,7 @@ import os
 import uuid
 from datetime import datetime, date, timedelta
 from typing import Dict, Any, List, Tuple
+from io import BytesIO
 
 import numpy as np
 import pandas as pd
@@ -626,6 +627,14 @@ with tab_mo:
     st.dataframe(fab_view, use_container_width=True)
 
 # ---- STOCK
+def to_excel_bytes(df):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        df.to_excel(writer, index=False, sheet_name="stock")
+    output.seek(0)
+    return output.read()
+
+
 with tab_stock:
     st.header("Stock") #titre
 
@@ -707,12 +716,13 @@ with tab_stock:
 
     st.dataframe(stock_view, use_container_width=True)
     st.download_button(
-        "⬇️ Télécharger (CSV)",
-        data=to_csv_bytes(stock_view),
-        file_name=f"stock_filtre_{datetime.now():%Y%m%d_%H%M%S}.csv",
-        mime="text/csv",
-        key="stock_export_btn",
+        "⬇️ Télécharger (Excel)",
+        data=to_excel_bytes(stock_view),
+        file_name=f"stock_filtre_{datetime.now():%Y%m%d_%H%M%S}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="stock_export_btn_xlsx",
     )
+
 
 
 # ---- INVENTAIRE
