@@ -623,7 +623,7 @@ with tab_mo:
 
     # Validation OF, ajout produit fini au stock
     st.subheader("Valider une fabrication et ajouter au stock")
-    fab_to_validate = fetch_df("SELECT moid, product, qty, status, ref FROM fabrications WHERE status = 'Post' ORDER BY duedate ASC")
+    fab_to_validate = fetch_df("SELECT moid, product, qty, status, ref FROM fabrications WHERE status = 'Post' ORDER BY due_date ASC")
     if not fab_to_validate.empty:
         st.dataframe(fab_to_validate, use_container_width=True)
         selected_moid = st.selectbox("OF à valider", fab_to_validate["moid"])
