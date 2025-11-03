@@ -626,21 +626,27 @@ with tab_mo:
 
     # Validation OF, ajout produit fini au stock
     st.subheader("Valider une fabrication et ajouter au stock")
-    fab_to_validate = fetch_df("SELECT moid, product, qty, status, ref FROM fabrications WHERE status = 'Post' ORDER BY due_date ASC")
+    
+    # Attention ici : les colonnes exactes sont mo_id, product, qty, status, ref (trier par due_date ou date)
+    fab_to_validate = fetch_df("SELECT mo_id, product, qty, status, ref FROM fabrications WHERE status = 'Post' ORDER BY due_date ASC")
+    
     if not fab_to_validate.empty:
         st.dataframe(fab_to_validate, use_container_width=True)
-        selected_moid = st.selectbox("OF à valider", fab_to_validate["moid"])
+        selected_moid = st.selectbox("OF à valider", fab_to_validate["mo_id"])
         if st.button("Valider fabrication et ajouter au stock", key="validate_of_btn"):
             try:
-                row = fab_to_validate[fab_to_validate["moid"] == selected_moid].iloc[0]
+                row = fab_to_validate[fab_to_validate["mo_id"] == selected_moid].iloc[0]
                 record_movement_and_update(row["product"], "IN", float(row["qty"]), row["ref"], "FABRICATION", responsable)
-                executesql("UPDATE fabrications SET status = 'Fait' WHERE moid = :moid", {"moid": selected_moid})
+                # Remplace executesql par :
+                with engine.begin() as conn:
+                    conn.execute(text("UPDATE fabrications SET status = 'Fait' WHERE mo_id = :moid"), {"moid": selected_moid})
                 st.success(f"OF {selected_moid} validé : {row['qty']} {row['product']} ajouté au stock.")
                 st.toast("Fabrication validée et stock mis à jour")
             except Exception as e:
                 st.error(f"Erreur validation fabrication : {e}")
     else:
         st.info("Aucun OF à valider actuellement.")
+
 
 
 
