@@ -468,9 +468,17 @@ with tab_mo:
     st.header("Ordres de fabrication")
     resp_list = get_responsables() or ["Aymane", "Joslain", "Lise", "Robin"]
     clients_df = get_clients()
+    acc_catalog = get_accessory_catalog()
+
+    # Prépare les référentiels nécessaires
+    acc_id_to_name = dict(zip(acc_catalog["id"].astype(str), acc_catalog["item_name"]))
+    acc_id_to_unit = dict(zip(acc_catalog["id"].astype(str), acc_catalog["unit"]))
+    client_opts = {str(r.id): str(r.client_name) for r in clients_df.itertuples(index=False)} if not clients_df.empty else {}
+    client_opts = {"NONE": "(aucun)", **client_opts, "NEW": "Client de passage (saisie)"}
 
     st.subheader("Créer un OF")
     with st.form("mo_form"):
+        # Saisie principale
         col1, col2 = st.columns(2)
         product = col1.selectbox("Produit fini", ["GMQ ONE", "GMQ LIVE"])
         responsable = col2.selectbox("Responsable", resp_list, index=0)
@@ -479,49 +487,36 @@ with tab_mo:
         due_date = col4.date_input("Date d'échéance", value=date.today() + timedelta(days=7))
         ref = col5.text_input("Référence OF", value="OF-AUTO")
 
-        st.markdown("**Client associé à l'OF**")
-        id_to_label = {"NONE": "(aucun)"}
-        if not clients_df.empty:
-            for r in clients_df.itertuples(index=False):
-                id_to_label[str(r.id)] = str(r.client_name)
-        id_to_label["NEW"] = "Client de passage (saisie)"
-        options = list(id_to_label.keys())
-        selected = st.selectbox("Client", options=options, index=0, format_func=lambda k: id_to_label[k])
-        client_free = None
-        if selected == "NEW":
-            client_free = st.text_input("Nom du client (passage)", value="")
+        sel_client = st.selectbox(
+            "Client associé", options=list(client_opts.keys()), index=0,
+            format_func=lambda k: client_opts[k]
+        )
+        client_free = st.text_input("Nom du client (passage)", value="") if sel_client == "NEW" else None
 
-        # === NEW: Accessoires pour l'OF ===
-        st.markdown("**Accessoires (optionnel)**")
-        acc_catalog = get_accessory_catalog()
-        acc_id_to_name = dict(zip(acc_catalog["id"].astype(str), acc_catalog["item_name"]))
-        acc_id_to_unit = dict(zip(acc_catalog["id"].astype(str), acc_catalog["unit"]))
-
-        # état local du formulaire
+        # Accessoires OF, état persistant
         if "of_acc_df_form" not in st.session_state:
             st.session_state["of_acc_df_form"] = pd.DataFrame(
                 columns=["component_sku", "item_name", "unit", "qty", "notes"]
             )
-
-        with st.expander("➕ Ajouter des accessoires depuis le stock"):
-            picked = st.multiselect(
-                "Accessoires (SKU)",
-                options=acc_catalog["id"].astype(str).tolist(),
+        with st.expander("➕ Ajouter des accessoires"):
+            pick = st.multiselect(
+                "Accessoires (SKU)", acc_catalog["id"].astype(str).tolist(),
                 format_func=lambda sku: f"{acc_id_to_name.get(sku,'??')} — {sku}",
-                key="of_acc_picked",
+                key="of_acc_picked"
             )
-            default_qty = st.number_input("Quantité par défaut (accessoire)", min_value=0.0, value=1.0, step=1.0, key="of_acc_default_qty")
-            if st.form_submit_button("Ajouter à la liste d’accessoires"):
-                cur = st.session_state["of_acc_df_form"].copy()
+            default_qty = st.number_input("Quantité par défaut", min_value=0.0, value=1.0, step=1.0, key="of_acc_default_qty")
+            if st.form_submit_button("Ajouter"):
+                cur = st.session_state["of_acc_df_form"]
                 existing = set(cur["component_sku"].astype(str)) if not cur.empty else set()
-                to_add = [sku for sku in picked if sku not in existing]
+                # Ajout unique
+                to_add = [sku for sku in pick if sku not in existing]
                 if to_add:
                     add_rows = pd.DataFrame({
                         "component_sku": to_add,
                         "item_name": [acc_id_to_name.get(sku, "??") for sku in to_add],
                         "unit": [acc_id_to_unit.get(sku, "") for sku in to_add],
-                        "qty": [default_qty for _ in to_add],
-                        "notes": ["" for _ in to_add],
+                        "qty": [default_qty]*len(to_add),
+                        "notes": ["" for _ in to_add]
                     })
                     st.session_state["of_acc_df_form"] = pd.concat([cur, add_rows], ignore_index=True)
                     st.success(f"{len(to_add)} accessoire(s) ajouté(s).")
@@ -529,102 +524,90 @@ with tab_mo:
                     st.info("Aucun nouvel accessoire.")
 
         st.data_editor(
-            st.session_state["of_acc_df_form"],
-            num_rows="dynamic",
-            use_container_width=True,
+            st.session_state["of_acc_df_form"], num_rows="dynamic", use_container_width=True,
             column_config={
-                "component_sku": st.column_config.TextColumn("SKU accessoire"),
+                "component_sku": st.column_config.TextColumn("SKU"), 
                 "item_name": st.column_config.TextColumn("Nom", disabled=True),
                 "unit": st.column_config.TextColumn("Unité", disabled=True),
                 "qty": st.column_config.NumberColumn("Quantité", min_value=0.0, step=0.1),
-                "notes": st.column_config.TextColumn("Notes"),
+                "notes": st.column_config.TextColumn("Notes")
             },
             key="of_acc_editor_form",
         )
-        # === /NEW ===
 
         cver, cpost = st.columns(2)
-        verify_clicked = cver.form_submit_button("Vérifier l'OF")
-        post_clicked = cpost.form_submit_button("Poster l'OF")
+        verify = cver.form_submit_button("Vérifier l'OF")
+        post = cpost.form_submit_button("Poster l'OF")
 
-        if verify_clicked or post_clicked:
-            if qty_make <= 0:
-                st.error("La quantité doit être > 0.")
+        if (verify or post) and qty_make > 0:
+            req_df, stock_ok = check_availability_sql(product, qty_make)
+            st.markdown("#### Besoins vs stock (BOM)")
+            st.dataframe(req_df, use_container_width=True)
+            if not stock_ok:
+                manques = req_df.loc[req_df["Manque"] > 0, ["ComponentSKU", "Manque"]]
+                noms_manques = ", ".join([
+                    f"{r.ComponentSKU} (-{r.Manque:.0f})" if float(r.Manque).is_integer() else f"{r.ComponentSKU} (-{r.Manque})"
+                    for r in manques.itertuples()
+                ])
+                st.error(f"Stock insuffisant. Composants manquants : {noms_manques}")
             else:
-                req_df, ok = check_availability_sql(product, qty_make)
-                st.markdown("#### Besoins vs stock (BOM)")
-                st.dataframe(req_df, use_container_width=True)
+                st.success("Stock OK pour l'OF.")
 
-                if not ok:
-                    manques = req_df.loc[req_df["Manque"] > 0, ["ComponentSKU", "Manque"]]
-                    manques_str = ", ".join([
-                        f"{r.ComponentSKU} (-{r.Manque:.0f})" if float(r.Manque).is_integer() else f"{r.ComponentSKU} (-{r.Manque})"
-                        for r in manques.itertuples()
-                    ])
-                    st.error(f"Stock insuffisant. Composants manquants : {manques_str}")
-                else:
-                    st.success("Stock OK pour l'OF.")
+            if post and stock_ok:
+                # Détermination client_id
+                client_id = None
+                if sel_client == "NEW":
+                    client_id = insert_client_return_id(client_free.strip(), ctype="Passage") if client_free else None
+                elif sel_client not in ("NONE", "NEW"):
+                    client_id = sel_client
 
-                if post_clicked and ok:
-                    # client_id final
-                    client_id = None
-                    if selected == "NEW":
-                        name = (client_free or "").strip()
-                        client_id = insert_client_return_id(name, ctype="Passage") if name else None
-                    elif selected not in ("NONE", "NEW"):
-                        client_id = selected
+                try:
+                    mo_id = post_fabrication(product, qty_make, due_date, ref, responsable, client_id)
 
-                    try:
-                        mo_id = post_fabrication(product, qty_make, due_date, ref, responsable, client_id)
+                    # Accessoires validés et liés à l'OF
+                    acc_df = st.session_state.get("of_acc_df_form", pd.DataFrame())
+                    valids = set(acc_catalog["id"].astype(str))
+                    work = acc_df[acc_df["component_sku"].astype(str).isin(valids)]
+                    work = work[pd.to_numeric(work["qty"], errors="coerce").fillna(0) > 0]
+                    rows = [{
+                        "component_sku": str(r["component_sku"]),
+                        "qty": float(r["qty"]),
+                        "notes": str(r.get("notes","") or "")
+                    } for _, r in work.iterrows()]
 
-                        # === NEW: enregistrer les accessoires liés à l'OF ===
-                        acc_df = st.session_state.get("of_acc_df_form", pd.DataFrame())
-                        if not acc_df.empty:
-                            # filtre: SKU existant dans le catalogue et qty>0
-                            valid = set(acc_catalog["id"].astype(str))
-                            work = acc_df.copy()
-                            work = work[work["component_sku"].astype(str).isin(valid)]
-                            work = work[pd.to_numeric(work["qty"], errors="coerce").fillna(0) > 0]
-                            rows = [{
-                                "component_sku": str(r["component_sku"]),
-                                "qty": float(r["qty"]),
-                                "notes": str(r.get("notes","") or ""),
-                            } for _, r in work.iterrows()]
-                            if rows:
-                                save_of_accessories(mo_id, rows)
-                        # reset accessoires du formulaire après post
-                        st.session_state["of_acc_df_form"] = pd.DataFrame(columns=["component_sku","item_name","unit","qty","notes"])
-                        # === /NEW ===
+                    if rows:
+                        save_of_accessories(mo_id, rows)
 
-                        st.success(f"OF {mo_id} posté par {responsable} (échéance {due_date:%Y-%m-%d}).")
-                        st.toast("OF posté")
-                    except Exception as e:
-                        st.error(str(e))
+                    # Reset accessoires après enregistrement
+                    st.session_state["of_acc_df_form"] = pd.DataFrame(columns=["component_sku","item_name","unit","qty","notes"])
+                    st.success(f"OF {mo_id} posté par {responsable} (échéance {due_date:%Y-%m-%d}).")
+                    st.toast("OF posté")
+                except Exception as e:
+                    st.error(str(e))
+        elif (verify or post) and qty_make <= 0:
+            st.error("La quantité à produire doit être > 0.")
 
-
+    # Affichage de la liste des OF
     st.divider()
     st.subheader("Liste des ordres de fabrication")
     fab_mm = fetch_df("SELECT MIN(date)::date AS dmin, MAX(date)::date AS dmax FROM fabrications")
     default_f_from = (fab_mm.get("dmin").iat[0] if not fab_mm.empty else None) or (date.today() - timedelta(days=30))
-    default_f_to   = (fab_mm.get("dmax").iat[0] if not fab_mm.empty else None) or date.today()
-
-        # === [REF:FAB-LIST-FILTERS] Liste des OF ===
+    default_f_to = (fab_mm.get("dmax").iat[0] if not fab_mm.empty else None) or date.today()
     f1, f2, f3 = st.columns(3)
-    f_from = f1.date_input("Du", value=default_f_from, key="fab_list_from")        # REF:FAB_FROM
-    f_to   = f2.date_input("Au", value=default_f_to,   key="fab_list_to")          # REF:FAB_TO
-    prod_pick = f3.multiselect("Produit", ["GMQ ONE","GMQ LIVE"],
-                               default=["GMQ ONE","GMQ LIVE"], key="fab_list_prod")  # REF:FAB_PROD
-    
+    f_from = f1.date_input("Du", value=default_f_from, key="fab_list_from")
+    f_to = f2.date_input("Au", value=default_f_to, key="fab_list_to")
+    prod_pick = f3.multiselect("Produit", ["GMQ ONE", "GMQ LIVE"], default=["GMQ ONE", "GMQ LIVE"], key="fab_list_prod")
+
     f4, f5 = st.columns(2)
-    status_opts  = ["(Tous)"] + fetch_df(
-        "SELECT DISTINCT status FROM fabrications WHERE status IS NOT NULL ORDER BY 1"
-    )["status"].astype(str).tolist()
-    status_pick  = f4.selectbox("Statut", status_opts, index=0, key="fab_list_status")  # REF:FAB_STATUS
-    client_filter = f5.text_input("Client contient", "", key="fab_list_client")         # REF:FAB_CLIENT
+    status_opts = ["(Tous)"] + fetch_df("SELECT DISTINCT status FROM fabrications WHERE status IS NOT NULL ORDER BY 1")["status"].astype(str).tolist()
+    status_pick = f4.selectbox("Statut", status_opts, index=0, key="fab_list_status")
+    client_filter = f5.text_input("Client contient", "", key="fab_list_client")
 
-
-    fab_view = get_fabrications_filtered(f_from, f_to, prod_pick, status_pick if status_pick != "(Tous)" else None, client_filter)
+    fab_view = get_fabrications_filtered(
+        f_from, f_to, prod_pick, None if status_pick == "(Tous)" else status_pick, client_filter
+    )
     st.dataframe(fab_view, use_container_width=True)
+
 
 # ---- STOCK
 def to_excel_bytes(df):
