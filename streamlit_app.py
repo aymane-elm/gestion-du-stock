@@ -735,21 +735,24 @@ with tab_invent:
     # Stock actuel (pour comparer)
     stock_df = get_stock()  # colonnes attendues: sku, qty_on_hand
 
-    st.markdown("**Importer un CSV**")
-    st.caption("Colonnes attendues : `SKU`, `Compté` (les noms proches sont auto-reconnus : sku, qte, counted, ...).")
-    csv_file = st.file_uploader("Choisir un fichier CSV", type=["csv"], key="inv_csv_uploader")
+    st.markdown("**Importer un fichier Excel ou CSV**")
+    st.caption("Colonnes attendues : `SKU`, `Compté` ...")
+    inv_file = st.file_uploader("Choisir un fichier Excel ou CSV", type=["csv", "xlsx"], key="inv_file_uploader")
 
     # --- Helpers lecture & normalisation CSV
-    def _read_csv_smart(file) -> pd.DataFrame:
+    def _read_excel_or_csv(file) -> pd.DataFrame:
         import io
-        # réinitialiser le curseur à chaque tentative
-        raw = file.read()
-        for sep in [";", ",", "\t", "|"]:
-            try:
-                return pd.read_csv(io.BytesIO(raw), sep=sep)
-            except Exception:
-                continue
-        return pd.read_csv(io.BytesIO(raw))  # dernier essai
+        if file.name.endswith('.xlsx'):
+            return pd.read_excel(file)
+        else:
+            raw = file.read()
+            for sep in [";", ",", "\t", "|"]:
+                try:
+                    return pd.read_csv(io.BytesIO(raw), sep=sep)
+                except Exception:
+                    continue
+            return pd.read_csv(io.BytesIO(raw))
+
 
     def _coerce_inventory_df(df_raw: pd.DataFrame) -> pd.DataFrame:
         if df_raw is None or df_raw.empty:
@@ -784,19 +787,29 @@ with tab_invent:
 
     # --- Lecture du CSV
     edited = None
-    if csv_file is not None:
+    if inv_file is not None:
         try:
-            raw = _read_csv_smart(csv_file)
+            raw = _read_excel_or_csv(inv_file)
             edited = _coerce_inventory_df(raw)
-            st.success(f"CSV importé : {len(edited)} ligne(s).")
+            st.success(f"Fichier importé : {len(edited)} lignes.")
             st.dataframe(edited, use_container_width=True)
         except Exception as e:
-            st.error(f"Erreur de lecture du CSV : {e}")
+            st.error(f"Erreur de lecture du fichier : {e}")
             edited = None
     else:
-        st.info("Importe un CSV pour calculer et valider les écarts.")
+        st.info("Importe un fichier Excel ou CSV pour calculer et valider les écarts.")
+
 
     # --- Actions
+    if edited is not None and not edited.empty:
+        # Ajoute les nouveaux SKUs dans le stock
+        stock_skus = set(stock_df["sku"].astype(str))
+        new_lines = edited[~edited["SKU"].isin(stock_skus)]
+        for r in new_lines.itertuples(index=False):
+            add_stock_item(r.SKU, r.SKU, "pcs", "Inventaire", 0., float(r.Compté), "Ajout inventaire")  # adapter si besoin
+        if len(new_lines) > 0:
+            st.success(f"{len(new_lines)} nouveaux produits ajoutés au stock.")
+
     c1, c2 = st.columns(2)
     calc = c1.button("Calculer les écarts", key="inv_calc")
     valider = c2.button("Valider ajustements", key="inv_valid")
