@@ -757,14 +757,14 @@ with tab_invent:
     responsable_inv = st.selectbox("Responsable inventaire", resp_list, index=0)
     ref_inv = st.text_input("Référence d'inventaire", value=f"INV-{datetime.now():%Y%m%d}")
 
-    # Stock actuel (pour comparer)
-    stock_df = get_stock()  # colonnes attendues: sku, qty_on_hand
+    stock_df = get_stock()  # colonnes: sku, name, unit, category, reorder_point, qty_on_hand, description
 
-    st.markdown("**Importer un fichier Excel ou CSV**")
-    st.caption("Colonnes attendues : `SKU`, `qty_on_hand` ...")
+    expected_cols = ["sku", "name", "unit", "category", "reorder_point", "qty_on_hand", "description"]
+
+    st.markdown("**Importer un fichier Excel ou CSV (structure identique à la table de stock)**")
+    st.caption(f"Colonnes attendues : {', '.join(expected_cols)}")
     inv_file = st.file_uploader("Choisir un fichier Excel ou CSV", type=["csv", "xlsx"], key="inv_file_uploader")
 
-    # --- Helpers lecture & normalisation CSV
     def _read_excel_or_csv(file) -> pd.DataFrame:
         import io
         if file.name.endswith('.xlsx'):
@@ -778,98 +778,74 @@ with tab_invent:
                     continue
             return pd.read_csv(io.BytesIO(raw))
 
+    def _validate_inventory_cols(df: pd.DataFrame) -> bool:
+        cols_std = [c.strip().lower() for c in df.columns]
+        for c in expected_cols:
+            if c not in cols_std:
+                st.error(f"Colonne obligatoire manquante : '{c}'")
+                return False
+        return True
 
-    def _coerce_inventory_df(df_raw: pd.DataFrame) -> pd.DataFrame:
-        if df_raw is None or df_raw.empty:
-            return pd.DataFrame(columns=["SKU", "qty_on_hand"])
-        df = df_raw.copy()
-        lower = {c.lower().strip(): c for c in df.columns}
-
-        # map SKU
-        sku_col = None
-        for c in ["sku", "code", "ref", "reference", "article", "id", "component_sku"]:
-            if c in lower:
-                sku_col = lower[c]; break
-        # map Compté
-        counted_col = None
-        for c in ["compté", "compte", "counted", "count", "qte", "quantite", "quantité", "qty", "qty_counted", "qte_comptee", "qte_comptée", "qty_on_hand"]:
-            if c in lower:
-                counted_col = lower[c]; break
-
-        if not sku_col or not counted_col:
-            if "SKU" in df.columns and "Compté" in df.columns:
-                sku_col, counted_col = "SKU", "qty_on_hand"
-            else:
-                st.error("Colonnes non reconnues. Il faut au minimum 'SKU' et 'qty_on_hand'.")
-                return pd.DataFrame(columns=["SKU", "qty_on_hand"])
-
-        out = pd.DataFrame({
-            "SKU": df[sku_col].astype(str),
-            "qty_on_hand": pd.to_numeric(df[counted_col], errors="coerce").fillna(0.0),
-        })
-        out = out[out["SKU"].str.strip() != ""]
-        return out
-
-    # --- Lecture du CSV
     edited = None
     if inv_file is not None:
         try:
             raw = _read_excel_or_csv(inv_file)
-            edited = _coerce_inventory_df(raw)
-            st.success(f"Fichier importé : {len(edited)} lignes.")
-            st.dataframe(edited, use_container_width=True)
+            # Vérification stricte des colonnes
+            lower_cols = [c.lower().strip() for c in raw.columns]
+            df = raw.rename(columns={c: c.lower().strip() for c in raw.columns})
+            if _validate_inventory_cols(df):
+                st.success(f"Fichier importé : {len(df)} lignes.")
+                st.dataframe(df[expected_cols], use_container_width=True)
+                edited = df[expected_cols].copy()
+            else:
+                edited = None
         except Exception as e:
             st.error(f"Erreur de lecture du fichier : {e}")
             edited = None
     else:
-        st.info("Importe un fichier Excel ou CSV pour calculer et valider les écarts.")
+        st.info("Importe un fichier Excel ou CSV de structure identique à la table de stock.")
 
-
-    # --- Actions
+    # --- Actions (ajouts nouveaux + maj qty_on_hand)
     if edited is not None and not edited.empty:
-        # Ajoute les nouveaux SKUs dans le stock
         stock_skus = set(stock_df["sku"].astype(str))
-        new_lines = edited[~edited["SKU"].isin(stock_skus)]
+        edited["sku"] = edited["sku"].astype(str)
+
+        # Ajouter nouveaux composants sur base de toutes les colonnes sauf qty_on_hand
+        new_lines = edited[~edited["sku"].isin(stock_skus)]
         for r in new_lines.itertuples(index=False):
-            add_stock_item(r.SKU, r.SKU, "pcs", "Inventaire", 0., float(r.qty_on_hand), "Ajout inventaire")  # adapter si besoin
+            add_stock_item(
+                r.sku, r.name, r.unit, r.category, r.reorder_point, float(r.qty_on_hand), r.description
+            )
         if len(new_lines) > 0:
             st.success(f"{len(new_lines)} nouveaux produits ajoutés au stock.")
 
-    c1, c2 = st.columns(2)
-    calc = c1.button("Calculer les écarts", key="inv_calc")
-    valider = c2.button("Valider ajustements", key="inv_valid")
+        c1, c2 = st.columns(2)
+        calc = c1.button("Calculer les écarts", key="inv_calc")
+        valider = c2.button("Valider ajustements", key="inv_valid")
 
-    def compute_diffs(ed: pd.DataFrame) -> pd.DataFrame:
-        if ed is None or ed.empty:
-            return pd.DataFrame(columns=["SKU", "Systeme", "Compté", "Ecart", "Sens"])
-        sm = stock_df[["sku", "qty_on_hand"]].rename(columns={"sku": "SKU", "qty_on_hand": "Systeme"})
-        ed2 = ed.copy()
-        ed2["SKU"] = ed2["SKU"].astype(str)
-        merged = ed2.merge(sm, on="SKU", how="left").fillna({"Systeme": 0.0})
-        merged["qty_on_hand"] = pd.to_numeric(merged["qty_on_hand"], errors="coerce").fillna(0.0)
-        merged["Ecart"] = merged["qty_on_hand"] - merged["Systeme"]
-        merged["Sens"] = np.where(merged["Ecart"] >= 0, "IN", "OUT")
-        return merged[["SKU", "Systeme", "qty_on_hand", "Ecart", "Sens"]]
+        def compute_diffs(ed: pd.DataFrame) -> pd.DataFrame:
+            sm = stock_df[["sku", "qty_on_hand"]].rename(columns={"sku": "SKU", "qty_on_hand": "Systeme"})
+            ed2 = ed.copy()
+            ed2["sku"] = ed2["sku"].astype(str)
+            merged = ed2.merge(sm, left_on="sku", right_on="SKU", how="left").fillna({"Systeme": 0.0})
+            merged["qty_on_hand"] = pd.to_numeric(merged["qty_on_hand"], errors="coerce").fillna(0.0)
+            merged["Ecart"] = merged["qty_on_hand"] - merged["Systeme"]
+            merged["Sens"] = np.where(merged["Ecart"] >= 0, "IN", "OUT")
+            return merged[["sku", "Systeme", "qty_on_hand", "Ecart", "Sens"]]
 
-    if calc:
-        if edited is None or edited.empty:
-            st.warning("Aucune donnée importée. Charge un CSV d’abord.")
-        else:
+        if calc:
             diffs = compute_diffs(edited)
             st.markdown("#### Écarts calculés")
             st.dataframe(diffs, use_container_width=True)
 
-    if valider:
-        if edited is None or edited.empty:
-            st.warning("Aucune donnée importée. Charge un CSV d’abord.")
-        else:
+        if valider:
             diffs = compute_diffs(edited)
             if diffs.empty:
                 st.info("Aucune ligne à ajuster.")
             else:
                 try:
                     for r in diffs.itertuples(index=False):
-                        sku = r.SKU
+                        sku = r.sku
                         ecart = float(r.Ecart)
                         if ecart == 0:
                             continue
