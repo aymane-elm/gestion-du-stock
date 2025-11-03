@@ -473,7 +473,6 @@ def get_qty_available(sku):
     return float(hit.iloc[0]["qty_on_hand"]) if not hit.empty else 0.0
 
 def get_bom_table_for_accessory(sku):
-    # Adaptation selon nomenclature connue (évolutive si d'autres accessoires ajoutés)
     table_map = {
         "KT BTT": "bom_kit_batterie",
         "RLNG": "bom_rallonge",
@@ -529,7 +528,7 @@ with tab_mo:
         )
         client_free = st.text_input("Nom du client (passage)", value="") if sel_client == "NEW" else None
 
-        # Sélection et référentiel des accessoires
+        # Accessoires
         default_accessory_name = accessory_by_product.get(product)
         mandatory_sku = next((sku for sku, name in acc_id_to_name.items() if name.lower() == default_accessory_name.lower()), None) if default_accessory_name else None
         options = [mandatory_sku] if mandatory_sku else []
@@ -582,18 +581,17 @@ with tab_mo:
                 elif sel_client not in ("NONE", "NEW"):
                     client_id = sel_client
                 try:
-                    mo_id = post_fabrication(product, qty_make, due_date, ref, responsable, client_id)
-                    # Soustraction accessoire si dispo stock direct
+                    # POST = déduction composants + statut "Post", PAS D'AJOUT STOCK PRODUIT
+                    mo_id = post_fabrication(product, qty_make, due_date, ref, responsable, client_id, add_product_to_stock=False)  # <- à ajuster
                     if acc_sku != "NONE" and accessory_check and accessory_check["source"] == "stock":
                         record_movement_and_update(acc_sku, "OUT", acc_qty, ref, "ACCESSOIRE", responsable)
-                    # Enregistrement accessoire (liaison OF/accessoires)
                     if acc_sku != "NONE":
                         save_of_accessories(mo_id, [{
                             "component_sku": acc_sku,
                             "qty": acc_qty,
                             "notes": ""
                         }])
-                    st.success(f"OF {mo_id} posté par {responsable} (échéance {due_date:%Y-%m-%d}).")
+                    st.success(f"OF {mo_id} posté par {responsable} (échéance {due_date:%Y-%m-%d}) (ajout stock à valider après réalisation).")
                     st.toast("OF posté")
                 except Exception as e:
                     st.error(str(e))
@@ -622,6 +620,26 @@ with tab_mo:
         f_from, f_to, prod_pick, None if status_pick == "(Tous)" else status_pick, client_filter
     )
     st.dataframe(fab_view, use_container_width=True)
+
+    # Validation OF, ajout produit fini au stock
+    st.subheader("Valider une fabrication et ajouter au stock")
+    fab_to_validate = fetch_df("SELECT moid, product, qty, status, ref FROM fabrications WHERE status = 'Post' ORDER BY duedate ASC")
+    if not fab_to_validate.empty:
+        st.dataframe(fab_to_validate, use_container_width=True)
+        selected_moid = st.selectbox("OF à valider", fab_to_validate["moid"])
+        if st.button("Valider fabrication et ajouter au stock", key="validate_of_btn"):
+            try:
+                row = fab_to_validate[fab_to_validate["moid"] == selected_moid].iloc[0]
+                record_movement_and_update(row["product"], "IN", float(row["qty"]), row["ref"], "FABRICATION", responsable)
+                executesql("UPDATE fabrications SET status = 'Fait' WHERE moid = :moid", {"moid": selected_moid})
+                st.success(f"OF {selected_moid} validé : {row['qty']} {row['product']} ajouté au stock.")
+                st.toast("Fabrication validée et stock mis à jour")
+            except Exception as e:
+                st.error(f"Erreur validation fabrication : {e}")
+    else:
+        st.info("Aucun OF à valider actuellement.")
+
+
 
 
 
