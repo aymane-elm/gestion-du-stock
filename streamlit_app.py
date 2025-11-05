@@ -205,34 +205,27 @@ def _expand_in_clause(sql: str, field: str, values: List[str], param_prefix: str
     return sql
 
 
-
-
 def get_mouvements_filtered(dfrom: date, dto: date, types: list, skulike: str = None, responsable: str = None) -> pd.DataFrame:
     q = """
-    SELECT id, date, sku, type, qty, motif, location, moid, responsable
+    SELECT id, date, sku, type, qty, ref, location, mo_id, responsable
     FROM mouvements
-    WHERE date BETWEEN :dfrom AND :dto
+    WHERE date::date BETWEEN :dfrom AND :dto
     """
     params: dict = {"dfrom": dfrom, "dto": dto}
-
     if types:
         norm = [t.upper() for t in types]
         in_clause = ','.join([f":type{i}" for i in range(len(norm))])
         q += f" AND type IN ({in_clause}) "
         for i, n in enumerate(norm):
             params[f"type{i}"] = n
-
     if skulike and skulike.strip():
         q += " AND sku ILIKE :sk "
         params["sk"] = f"%{skulike.strip()}%"
-
     if responsable and responsable.strip() and responsable != "Tous":
         q += " AND responsable = :resp "
         params["resp"] = responsable
-
     q += " ORDER BY date DESC"
     return fetch_df(q, params)
-
 
 
 def get_fabrications_filtered(d_from: date, d_to: date, products: List[str],
@@ -276,8 +269,17 @@ def get_bom(product: str) -> pd.DataFrame:
     else:
         raise ValueError("Produit inconnu")
 
+# --- utilitaire de normalisation ---
+PRODUCT_CANON = {
+    "GMQ-ONE": "GMQ ONE",
+    "GMQ-LIVE": "GMQ LIVE",
+    "Antenne": "Antenne",
+}
+def canonize_product(p: str) -> str:
+    return PRODUCT_CANON.get(p, p)
 
 def check_availability_sql(product: str, qty_make: float) -> Tuple[pd.DataFrame, bool]:
+    product = canonize_product(product)  # 🔑
     bom = get_bom(product)
     stock = get_stock()[["sku","qty_on_hand"]].rename(columns={"sku": "componentsku"})
     df = bom.merge(stock, on="componentsku", how="left")
@@ -298,49 +300,47 @@ def check_availability_sql(product: str, qty_make: float) -> Tuple[pd.DataFrame,
 
 def post_fabrication(product: str, qty_make: float, due_date: date,
                      ref: str, responsable: str, client_id: str | None) -> str:
+    product = canonize_product(product)  # 🔑
     req_df, ok = check_availability_sql(product, qty_make)
     if not ok:
         raise ValueError("Stock insuffisant pour poster l'OF")
 
-    mo_uuid = str(uuid.uuid4())  # UUID valide pour colonne UUID
-    fin_sku = "GMQ-ONE" if product == "GMQ ONE" else "GMQ-LIVE"
+    mo_uuid = str(uuid.uuid4())
+
+    # mapping produit fini -> SKU stock
+    FINISHED_SKU = {"GMQ ONE": "GMQ-ONE", "GMQ LIVE": "GMQ-LIVE", "Antenne": "Antenne"}
+    fin_sku = FINISHED_SKU.get(product, product)
 
     with engine.begin() as conn:
-        # 1) Insert fabrication
-        conn.execute(text(
-            """
+        conn.execute(text("""
             INSERT INTO fabrications (mo_id, date, due_date, product, qty, status, ref, responsable, client_id)
             VALUES (:mo, now(), :due, :prod, :qty, 'Posté', :ref, :resp, :client_id)
-            """
-        ), {"mo": mo_uuid, "due": due_date, "prod": product, "qty": float(qty_make),
-            "ref": ref, "resp": responsable, "client_id": client_id})
+        """), {"mo": mo_uuid, "due": due_date, "prod": product, "qty": float(qty_make),
+               "ref": ref, "resp": responsable, "client_id": client_id})
 
-        # 2) Composants OUT
+        # Débits composants (ne retire que si besoin > 0)
         for _, r in req_df.iterrows():
-            comp_sku = r["ComponentSKU"]
             need = float(r["Besoin (total)"])
-            # MAJ stock composant
+            if need <= 0:
+                continue
+            comp_sku = r["ComponentSKU"]
             conn.execute(text("UPDATE stock SET qty_on_hand = COALESCE(qty_on_hand,0) - :q WHERE sku=:s"),
                          {"q": need, "s": comp_sku})
-            # Mouvement
-            conn.execute(text(
-                """
+            conn.execute(text("""
                 INSERT INTO mouvements(date, sku, type, qty, ref, location, mo_id, responsable)
                 VALUES (now(), :sku, 'OUT', :qty, :ref, 'PROD', :mo, :resp)
-                """
-            ), {"sku": comp_sku, "qty": need, "ref": ref, "mo": mo_uuid, "resp": responsable})
+            """), {"sku": comp_sku, "qty": need, "ref": ref, "mo": mo_uuid, "resp": responsable})
 
-        # 3) Produit fini IN
+        # Produit fini IN
         conn.execute(text("UPDATE stock SET qty_on_hand = COALESCE(qty_on_hand,0) + :q WHERE sku=:s"),
                      {"q": float(qty_make), "s": fin_sku})
-        conn.execute(text(
-            """
+        conn.execute(text("""
             INSERT INTO mouvements(date, sku, type, qty, ref, location, mo_id, responsable)
             VALUES (now(), :sku, 'IN', :qty, :ref, 'STOCK', :mo, :resp)
-            """
-        ), {"sku": fin_sku, "qty": float(qty_make), "ref": ref, "mo": mo_uuid, "resp": responsable})
+        """), {"sku": fin_sku, "qty": float(qty_make), "ref": ref, "mo": mo_uuid, "resp": responsable})
 
     return mo_uuid
+
 
 
 # =========================
@@ -391,7 +391,7 @@ with tab_moves:
         responsable = colb.selectbox("Responsable", resplist, index=0)
         movetype = st.radio("Type", ("IN", "OUT"), horizontal=True)
         qty = st.number_input("Quantité", min_value=0.0, step=1.0)
-        motif = st.text_input("Motif", value="MANUAL")
+        ref = st.text_input("Référence", value="MANUAL")
         loc = st.text_input("Emplacement", value="ENTREPOT")
         submitted = st.form_submit_button("Enregistrer")
         if submitted:
@@ -399,7 +399,7 @@ with tab_moves:
                 st.error("La quantité doit être > 0.")
             else:
                 try:
-                    newqty = record_movement_and_update(sku, movetype, qty, motif, loc, responsable)
+                    newqty = record_movement_and_update(sku, movetype, qty, ref, loc, responsable)
                     st.success(f"Mouvement {movetype} enregistré. Nouveau stock {sku}: {newqty}.")
                     st.toast("Mouvement enregistré")
                 except Exception as e:
@@ -407,7 +407,6 @@ with tab_moves:
 
     st.divider()
     st.subheader("Historique des mouvements")
-
     mvall = fetch_df("SELECT MIN(date) AS dmin, MAX(date) AS dmax FROM mouvements")
     default_from = mvall.get("dmin").iat[0] if not mvall.empty else date.today() - timedelta(days=30)
     default_to = mvall.get("dmax").iat[0] if not mvall.empty else date.today()
@@ -423,11 +422,10 @@ with tab_moves:
     mvview = get_mouvements_filtered(
         dfrom, dto, types, skufilter, resppick if resppick != "Tous" else None
     )
-    # Renomme "motif" pour l'affichage en DataFrame (label)
+    # Renomme "ref" pour l'affichage en DataFrame
     if not mvview.empty:
-        mvview = mvview.rename(columns={"motif": "Motif"})
+        mvview = mvview.rename(columns={"ref": "Référence"})
     st.dataframe(mvview, use_container_width=True)
-
 
     
 
@@ -646,16 +644,20 @@ with tab_mo:
             fab_to_validate.itertuples(index=False),
             format_func=lambda r: f"{r.of_code} - {r.product} ({r.qty})"
         )
+
         if st.button("Valider fabrication et ajouter au stock", key="validate_of_btn"):
             try:
                 row = selected_row
-                record_movement_and_update(row.product, "IN", float(row.qty), row.ref, "FABRICATION", responsable)
+                FINISHED_SKU = {"GMQ ONE": "GMQ-ONE", "GMQ LIVE": "GMQ-LIVE", "Antenne": "Antenne"}
+                sku_fin = FINISHED_SKU.get(row.product, row.product)   # 🔑
+                record_movement_and_update(sku_fin, "IN", float(row.qty), row.ref, "FABRICATION", responsable)
                 with engine.begin() as conn:
                     conn.execute(text("UPDATE fabrications SET status = 'Fait' WHERE mo_id = :mo_id"), {"mo_id": row.mo_id})
-                st.success(f"OF {row.of_code} validé : {row.qty} {row.product} ajouté au stock.")
+                st.success(f"OF {row.of_code} validé : {row.qty} {row.product} ajouté au stock.")
                 st.toast("Fabrication validée et stock mis à jour")
             except Exception as e:
                 st.error(f"Erreur validation fabrication : {e}")
+
     else:
         st.info("Aucun OF à valider actuellement.")
 
@@ -670,35 +672,38 @@ def to_excel_bytes(df):
 
 
 with tab_stock:
-    st.header("Stock")
-    st.subheader("Ajouter un article")
+    st.header("Stock") #titre
 
-    # LAYOUT COLONNES COMME AVANT
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with st.form(key="stock_add_form"):
-        sku = col1.text_input("SKU")
-        name = col2.text_input("Nom (libellé)")
-        unit = col3.text_input("Unité", value="pcs")
-        col4, col5 = st.columns([2, 1])
-        # Remplace l'input catégorie par un selectbox
-        cat_choices = ["Composant", "Produit fini", "Accessoire"]
-        category = col4.selectbox("Catégorie", cat_choices)
-        reorder_point = col5.number_input("Point de commande", value=0.0, step=1.0)
-        qty_on_hand = st.number_input("Stock initial", value=0.0, step=1.0)
-        description = st.text_area("Description", value="")
-        submit = st.form_submit_button("Ajouter au stock")
-        if submit:
-            add_stock_item(sku, name, unit, category, reorder_point, qty_on_hand, description)
-            st.success(f"{sku} ajouté au stock avec la catégorie {category}.")
+    st.subheader("Ajouter un article")
+    with st.form("stock_add"):
+        c1, c2, c3 = st.columns(3)
+        sku_new = c1.text_input("SKU *", "")
+        name_new = c2.text_input("Nom *", "")
+        unit_new = c3.text_input("Unité", value="pcs")
+        c4, c5, c6 = st.columns(3)
+        categories = ["Composant", "Accessoire", "Produit fini"]
+        cat_new = c4.selectbox("Catégorie", options=categories, index=0)
+        rop_new = c5.number_input("ReorderPoint", min_value=0.0, step=1.0, value=0.0)
+        qty_new = c6.number_input("QtyOnHand (initiale)", min_value=0.0, step=1.0, value=0.0)
+        desc_new = st.text_input("Description", "")
+        btn_add_stock = st.form_submit_button("Ajouter")
+
+        if btn_add_stock:
+            if not sku_new.strip() or not name_new.strip():
+                st.error("SKU et Nom sont obligatoires.")
+            else:
+                try:
+                    add_stock_item(sku_new.strip(), name_new.strip(), unit_new.strip(),
+                                   cat_new.strip(), float(rop_new), float(qty_new), (desc_new or None))
+                    st.success(f"Article {sku_new} ajouté.")
+                    st.toast("Article ajouté")
+                except Exception as e:
+                    st.error(str(e))
 
     st.divider()
-    st.subheader("Tableau du stock actuel")
-    stock_df = get_stock()
-    if not stock_df.empty:
-        st.dataframe(stock_df, use_container_width=True)
-    else:
-        st.info("Aucun produit en stock.")
 
+    st.subheader("Édition rapide")
+    stock_df = get_stock()
     edited = st.data_editor(
         stock_df,
         use_container_width=True,
@@ -989,12 +994,15 @@ def get_stock_components() -> pd.DataFrame:
     """
     return fetch_df(sql)
 
+
+BOM_TABLES = ["bom_gmq_one", "bom_gmq_live", "bom_antenne", "bom_kit_batterie"]
+
 def get_bom_full(table_name: str) -> pd.DataFrame:
     """
     Charge TOUTE la table BOM (bom_gmq_one | bom_gmq_live) avec les libellés depuis stock.
     Colonnes renvoyées: component_sku, item_name, unit, qty_per_unit, description
     """
-    if table_name not in {"bom_gmq_one", "bom_gmq_live"}:
+    if table_name not in BOM_TABLES :
         raise ValueError("Table BOM inconnue")
 
     sql = f"""
@@ -1016,7 +1024,7 @@ def save_bom_full_replace(table_name: str, df: pd.DataFrame, stock_df: pd.DataFr
     - Ne garde que les lignes avec component_sku ∈ stock.sku et qty_per_unit > 0.
     - Retourne le nombre de lignes insérées.
     """
-    if table_name not in {"bom_gmq_one", "bom_gmq_live"}:
+    if table_name not in BOM_TABLES:
         raise ValueError("Table BOM inconnue")
 
     if df is None or df.empty:
@@ -1062,112 +1070,169 @@ def _load_bom_full_into_state(table_name: str):
 
 # =============================== ONGLET BOM ===============================
 with tab_bom:
-    st.subheader("BOM — GMQ (édition par table)")
+    st.subheader("Bill of materials")
+
+    # --- tables autorisées ---
+    BOM_TABLES = ["bom_gmq_one", "bom_gmq_live", "bom_antenne", "bom_kit_batterie"]
 
     table_choice = st.radio(
         "Table BOM à modifier",
-        options=["bom_gmq_one", "bom_gmq_live"],
+        options=BOM_TABLES,
         horizontal=True,
         key="bom_table_choice",
     )
 
     # Référentiel composants
     stock_df = get_stock_components()
-    stock_id_to_name = dict(zip(stock_df["id"].astype(str), stock_df["item_name"]))
-    stock_id_to_unit = dict(zip(stock_df["id"].astype(str), stock_df["unit"]))
+    stock_df["id"] = stock_df["id"].astype(str)
+    stock_id_to_name = dict(zip(stock_df["id"], stock_df["item_name"]))
+    stock_id_to_unit = dict(zip(stock_df["id"], stock_df["unit"]))
 
-    # --------- CHARGEMENT CONTRÔLÉ (ne pas écraser à chaque run !) ---------
+    # --------- CHARGEMENT CONTRÔLÉ ---------
     state_key = f"bom_full_df_{table_choice}"
-    # mémoriser la dernière table
     if "bom_last_table" not in st.session_state:
         st.session_state["bom_last_table"] = table_choice
 
-    # 1) première fois pour cette table
     if state_key not in st.session_state:
         _load_bom_full_into_state(table_choice)
 
-    # 2) si l’utilisateur change de table → recharger la nouvelle, ne pas toucher sinon
     if st.session_state["bom_last_table"] != table_choice:
         _load_bom_full_into_state(table_choice)
         st.session_state["bom_last_table"] = table_choice
 
-    # 3) bouton de refresh manuel (pas automatique à chaque run)
-    if st.button("🔄 Recharger depuis la base", key="bom_refresh_btn"):
-        _load_bom_full_into_state(table_choice)
-
     # ----------------------------------------------------------------------
+    # 1) FORMULAIRE DE SÉLECTION (aucun rerun tant que Submit pas cliqué)
+    # ----------------------------------------------------------------------
+    st.markdown("### 1) Sélectionner des composants à ajouter")
+    with st.form("form_select_add", clear_on_submit=False):
+        # Petit "catalogue" avec cases à cocher et quantité
+        cat_cols = ["id", "item_name", "unit"]
+        cat_view = stock_df[cat_cols].rename(columns={"id": "SKU", "item_name": "Nom", "unit": "Unité"}).copy()
+        # colonnes de saisie utilisateur
+        cat_view["Sélectionner"] = False
+        cat_view["Quantité par unité"] = 1.0
 
-    st.markdown("### Ajouter des composants (depuis le stock)")
-    with st.expander("➕ Ajouter"):
-        added_skus = st.multiselect(
-            "Composants à ajouter (SKU)",
-            options=stock_df["id"].astype(str).tolist(),
-            format_func=lambda sku: f"{stock_id_to_name.get(sku, '??')} — {sku}",
-            key="bom_add_skus",
+        cat_help = st.checkbox("Afficher tout le catalogue (sinon filtrer par recherche)", value=False)
+        if not cat_help:
+            q = st.text_input("🔎 Rechercher (SKU ou nom)", "")
+            if q.strip():
+                qlow = q.lower()
+                cat_view = cat_view[
+                    cat_view["SKU"].str.lower().str.contains(qlow) |
+                    cat_view["Nom"].str.lower().str.contains(qlow)
+                ]
+
+        selection_df = st.data_editor(
+            cat_view,
+            use_container_width=True,
+            num_rows="fixed",
+            column_config={
+                "Sélectionner": st.column_config.CheckboxColumn(),
+                "Quantité par unité": st.column_config.NumberColumn(min_value=0.0, step=0.1),
+            },
+            hide_index=True,
+            key=f"catalog_editor_{table_choice}",
         )
-        default_qty = st.number_input("Quantité par défaut", min_value=0.0, value=1.0, step=1.0, key="bom_default_qty_all")
-        if st.button("Ajouter à la table courante", key="bom_add_btn_all"):
+
+        csel1, csel2 = st.columns([1,1])
+        with csel1:
+            default_qty = st.number_input("Quantité par défaut pour la sélection", min_value=0.0, step=1.0, value=1.0, key="bom_default_qty_all")
+        with csel2:
+            apply_default = st.form_submit_button("Appliquer la quantité par défaut aux lignes cochées")
+            if apply_default and not selection_df.empty:
+                mask = selection_df["Sélectionner"] == True
+                selection_df.loc[mask, "Quantité par unité"] = float(default_qty)
+                # réinjecter dans session_state (pour réaffichage)
+                st.session_state[f"catalog_editor_{table_choice}"] = selection_df
+
+        submit_add = st.form_submit_button("➕ Ajouter à l’édition (local)")
+        if submit_add:
             current = st.session_state[state_key].copy()
             existing = set(current["component_sku"].astype(str)) if not current.empty else set()
-            to_add = [sku for sku in added_skus if sku not in existing]
-            if to_add:
-                add_rows = pd.DataFrame({
-                    "component_sku": to_add,
-                    "item_name": [stock_id_to_name.get(sku, "??") for sku in to_add],
-                    "unit": [stock_id_to_unit.get(sku, "") for sku in to_add],
-                    "qty_per_unit": [default_qty for _ in to_add],
-                    "description": ["" for _ in to_add],
-                })
-                st.session_state[state_key] = pd.concat([current, add_rows], ignore_index=True)
-                st.success(f"{len(to_add)} composant(s) ajouté(s).")
+
+            picked = selection_df[selection_df["Sélectionner"] == True].copy()
+            if picked.empty:
+                st.info("Aucun composant sélectionné.")
             else:
-                st.info("Aucun nouveau composant à ajouter.")
+                to_add_rows = []
+                for _, r in picked.iterrows():
+                    sku = str(r["SKU"])
+                    if sku in existing:
+                        continue
+                    qty = float(r["Quantité par unité"] or 0.0)
+                    to_add_rows.append({
+                        "component_sku": sku,
+                        "item_name": stock_id_to_name.get(sku, "??"),
+                        "unit": stock_id_to_unit.get(sku, ""),
+                        "qty_per_unit": qty,
+                        "description": "",
+                    })
 
-    st.markdown("### Éditer la BOM")
-    edited_df = st.data_editor(
-        st.session_state[state_key],
-        num_rows="dynamic",
-        use_container_width=True,
-        column_config={
-            "component_sku": st.column_config.TextColumn("SKU composant"),
-            "item_name": st.column_config.TextColumn("Nom composant", disabled=True),
-            "unit": st.column_config.TextColumn("Unité", disabled=True),
-            "qty_per_unit": st.column_config.NumberColumn("Quantité par unité", min_value=0.0, step=0.1),
-            "description": st.column_config.TextColumn("Description"),
-        },
-        key=f"bom_editor_full_{table_choice}",
-    )
+                if to_add_rows:
+                    add_rows = pd.DataFrame(to_add_rows)
+                    st.session_state[state_key] = pd.concat([current, add_rows], ignore_index=True)
+                    st.success(f"{len(to_add_rows)} composant(s) ajouté(s) à l’édition.")
+                else:
+                    st.info("Tous les composants cochés existent déjà dans l’édition.")
+    # ----------------------------------------------------------------------
 
-    c1, c2, c3 = st.columns(3)
-    if c1.button("🧹 Vider (local)", key="bom_clear_full"):
-        st.session_state[state_key] = pd.DataFrame(columns=["component_sku", "item_name", "unit", "qty_per_unit", "description"])
-        st.info("Table locale vidée — non enregistrée.")
+    # ----------------------------------------------------------------------
+    # 2) FORMULAIRE D'ÉDITION & ENREGISTREMENT
+    # ----------------------------------------------------------------------
+    st.markdown("### 2) Éditer la BOM (local) puis enregistrer")
+    with st.form("form_edit_save", clear_on_submit=False):
+        edited_df = st.data_editor(
+            st.session_state[state_key],
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "component_sku": st.column_config.TextColumn("SKU composant"),
+                "item_name": st.column_config.TextColumn("Nom composant", disabled=True),
+                "unit": st.column_config.TextColumn("Unité", disabled=True),
+                "qty_per_unit": st.column_config.NumberColumn("Quantité par unité", min_value=0.0, step=0.1),
+                "description": st.column_config.TextColumn("Description"),
+            },
+            key=f"bom_editor_full_{table_choice}",
+        )
 
-    if c2.button("🗑️ Astuce suppression (local)", key="bom_hint_del_full"):
-        st.info("Pour supprimer une ligne, mets qty_per_unit à 0 puis Enregistrer (les lignes qty=0 seront ignorées).")
+        cc1, cc2, cc3, cc4 = st.columns(4)
+        clear_local = cc1.form_submit_button("🧹 Vider (local)")
+        hint_del    = cc2.form_submit_button("🗑️ Astuce suppression (local)")
+        refresh_db  = cc3.form_submit_button("🔄 Recharger depuis la base")
+        save_db     = cc4.form_submit_button("💾 Enregistrer dans la base")
 
-    if c3.button("💾 Enregistrer dans la base", key="bom_save_full"):
-        try:
-            # IMPORTANT : on sauve **le DataFrame édité**, pas le rechargé
-            n = save_bom_full_replace(table_choice, edited_df, stock_df)
-            if n == 0 and (edited_df is None or edited_df.empty):
-                st.warning("Éditeur vide → par sécurité, la table n’a pas été modifiée.")
-            else:
-                st.success(f"Table {table_choice} enregistrée ({n} ligne(s)).")
-                try:
-                    st.toast("BOM enregistrée")
-                except Exception:
-                    pass
-                # maintenant on recharge depuis la DB (après save), puis on rerun
-                _load_bom_full_into_state(table_choice)
-                st.rerun()
-        except Exception as e:
-            st.error(f"Erreur lors de l’enregistrement : {e}")
+        if clear_local:
+            st.session_state[state_key] = pd.DataFrame(columns=["component_sku", "item_name", "unit", "qty_per_unit", "description"])
+            st.info("Table locale vidée — non enregistrée.")
+
+        if hint_del:
+            st.info("Pour supprimer une ligne, mets qty_per_unit à 0 puis Enregistrer (les lignes qty=0 seront ignorées).")
+
+        if refresh_db:
+            _load_bom_full_into_state(table_choice)
+            st.success("Rechargé depuis la base.")
+
+        if save_db:
+            try:
+                n = save_bom_full_replace(table_choice, edited_df, stock_df)
+                if n == 0 and (edited_df is None or edited_df.empty):
+                    st.warning("Éditeur vide → par sécurité, la table n’a pas été modifiée.")
+                else:
+                    st.success(f"Table {table_choice} enregistrée ({n} ligne(s)).")
+                    try:
+                        st.toast("BOM enregistrée")
+                    except Exception:
+                        pass
+                    # recharge la version DB dans le state, mais SANS st.rerun()
+                    _load_bom_full_into_state(table_choice)
+            except Exception as e:
+                st.error(f"Erreur lors de l’enregistrement : {e}")
 
 
 
 
-# ============ ONGLET IMPORTE ============== 
+
+# ============ ONGLET IMPORTE  
 with tab_importe:
     st.header("Importation totale du stock")
     st.caption("Importer un fichier Excel ou CSV pour REMPLACER/AJOUTER toute la table stock. Les colonnes suivantes sont OBLIGATOIRES : sku, name, unit, category, reorder_point, qty_on_hand, description.")
