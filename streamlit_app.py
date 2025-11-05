@@ -269,8 +269,17 @@ def get_bom(product: str) -> pd.DataFrame:
     else:
         raise ValueError("Produit inconnu")
 
+# --- utilitaire de normalisation ---
+PRODUCT_CANON = {
+    "GMQ-ONE": "GMQ ONE",
+    "GMQ-LIVE": "GMQ LIVE",
+    "Antenne": "Antenne",
+}
+def canonize_product(p: str) -> str:
+    return PRODUCT_CANON.get(p, p)
 
 def check_availability_sql(product: str, qty_make: float) -> Tuple[pd.DataFrame, bool]:
+    product = canonize_product(product)  # 🔑
     bom = get_bom(product)
     stock = get_stock()[["sku","qty_on_hand"]].rename(columns={"sku": "componentsku"})
     df = bom.merge(stock, on="componentsku", how="left")
@@ -291,49 +300,47 @@ def check_availability_sql(product: str, qty_make: float) -> Tuple[pd.DataFrame,
 
 def post_fabrication(product: str, qty_make: float, due_date: date,
                      ref: str, responsable: str, client_id: str | None) -> str:
+    product = canonize_product(product)  # 🔑
     req_df, ok = check_availability_sql(product, qty_make)
     if not ok:
         raise ValueError("Stock insuffisant pour poster l'OF")
 
-    mo_uuid = str(uuid.uuid4())  # UUID valide pour colonne UUID
-    fin_sku = "GMQ-ONE" if product == "GMQ ONE" else "GMQ-LIVE"
+    mo_uuid = str(uuid.uuid4())
+
+    # mapping produit fini -> SKU stock
+    FINISHED_SKU = {"GMQ ONE": "GMQ-ONE", "GMQ LIVE": "GMQ-LIVE", "Antenne": "Antenne"}
+    fin_sku = FINISHED_SKU.get(product, product)
 
     with engine.begin() as conn:
-        # 1) Insert fabrication
-        conn.execute(text(
-            """
+        conn.execute(text("""
             INSERT INTO fabrications (mo_id, date, due_date, product, qty, status, ref, responsable, client_id)
             VALUES (:mo, now(), :due, :prod, :qty, 'Posté', :ref, :resp, :client_id)
-            """
-        ), {"mo": mo_uuid, "due": due_date, "prod": product, "qty": float(qty_make),
-            "ref": ref, "resp": responsable, "client_id": client_id})
+        """), {"mo": mo_uuid, "due": due_date, "prod": product, "qty": float(qty_make),
+               "ref": ref, "resp": responsable, "client_id": client_id})
 
-        # 2) Composants OUT
+        # Débits composants (ne retire que si besoin > 0)
         for _, r in req_df.iterrows():
-            comp_sku = r["ComponentSKU"]
             need = float(r["Besoin (total)"])
-            # MAJ stock composant
+            if need <= 0:
+                continue
+            comp_sku = r["ComponentSKU"]
             conn.execute(text("UPDATE stock SET qty_on_hand = COALESCE(qty_on_hand,0) - :q WHERE sku=:s"),
                          {"q": need, "s": comp_sku})
-            # Mouvement
-            conn.execute(text(
-                """
+            conn.execute(text("""
                 INSERT INTO mouvements(date, sku, type, qty, ref, location, mo_id, responsable)
                 VALUES (now(), :sku, 'OUT', :qty, :ref, 'PROD', :mo, :resp)
-                """
-            ), {"sku": comp_sku, "qty": need, "ref": ref, "mo": mo_uuid, "resp": responsable})
+            """), {"sku": comp_sku, "qty": need, "ref": ref, "mo": mo_uuid, "resp": responsable})
 
-        # 3) Produit fini IN
+        # Produit fini IN
         conn.execute(text("UPDATE stock SET qty_on_hand = COALESCE(qty_on_hand,0) + :q WHERE sku=:s"),
                      {"q": float(qty_make), "s": fin_sku})
-        conn.execute(text(
-            """
+        conn.execute(text("""
             INSERT INTO mouvements(date, sku, type, qty, ref, location, mo_id, responsable)
             VALUES (now(), :sku, 'IN', :qty, :ref, 'STOCK', :mo, :resp)
-            """
-        ), {"sku": fin_sku, "qty": float(qty_make), "ref": ref, "mo": mo_uuid, "resp": responsable})
+        """), {"sku": fin_sku, "qty": float(qty_make), "ref": ref, "mo": mo_uuid, "resp": responsable})
 
     return mo_uuid
+
 
 
 # =========================
