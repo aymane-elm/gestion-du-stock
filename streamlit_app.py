@@ -1065,13 +1065,12 @@ def _load_bom_full_into_state(table_name: str):
     st.session_state[state_key] = get_bom_full(table_name)
 
 # =============================== ONGLET BOM ===============================
+# ... (helpers inchangés) ...
+
 with tab_bom:
     st.subheader("Bill of materials")
 
-    # --- tables BOM autorisées (adapter si besoin) ---
     BOM_TABLES = ["bom_gmq_one", "bom_gmq_live", "bom_antenne", "bom_kit_batterie"]
-
-    # Choix de la table à éditer
     table_choice = st.radio(
         "Table BOM à modifier",
         options=BOM_TABLES,
@@ -1079,28 +1078,23 @@ with tab_bom:
         key="bom_table_choice",
     )
 
-    # ---------- Référentiel composants ----------
     stock_df = get_stock_components()
     stock_df["id"] = stock_df["id"].astype(str)
     sku_options = stock_df["id"].tolist()
     name_by_id  = dict(zip(stock_df["id"], stock_df["item_name"]))
     unit_by_id  = dict(zip(stock_df["id"], stock_df["unit"]))
 
-    # ---------- State & chargement contrôlé ----------
     state_key = f"bom_full_df_{table_choice}"
     if "bom_last_table" not in st.session_state:
         st.session_state["bom_last_table"] = table_choice
 
-    # première fois pour cette table
     if state_key not in st.session_state:
         _load_bom_full_into_state(table_choice)
 
-    # si changement de table -> recharger uniquement celle-ci
     if st.session_state["bom_last_table"] != table_choice:
         _load_bom_full_into_state(table_choice)
         st.session_state["bom_last_table"] = table_choice
 
-    # s'assurer des colonnes attendues
     base_cols = ["component_sku", "item_name", "unit", "qty_per_unit", "description"]
     for c in base_cols:
         if c not in st.session_state[state_key].columns:
@@ -1109,10 +1103,10 @@ with tab_bom:
     st.markdown("### 2) Éditer la BOM (local) puis enregistrer")
     with st.form("bom_single_table", clear_on_submit=False):
 
-        # Tableau unique : + pour ajouter une ligne
+        # Ici la config colonne est bien passée à st.data_editor
         edited_df = st.data_editor(
             st.session_state[state_key],
-            num_rows="dynamic",            # <-- affiche le bouton +
+            num_rows="dynamic",
             use_container_width=True,
             hide_index=True,
             column_config={
@@ -1122,7 +1116,11 @@ with tab_bom:
                     format_func=lambda v: f"{name_by_id.get(str(v), '??')} — {v}",
                     help="Choisir un composant dans le stock",
                 ),
-                "description": st.column_config.TextColumn("Description", placeholder="Optionnel"),
+                "description": st.column_config.TextColumn(
+                    "Description",
+                    help="Texte libre du composant",
+                    placeholder="Optionnel"
+                ),
                 "item_name": st.column_config.TextColumn("Nom composant", disabled=True),
                 "unit": st.column_config.TextColumn("Unité", disabled=True),
                 "qty_per_unit": st.column_config.NumberColumn(
@@ -1132,13 +1130,12 @@ with tab_bom:
             key=f"bom_editor_single_{table_choice}",
         )
 
-        # Actions
+        # ... Le reste du formulaire (nettoyage, refresh, save, enrich) inchangé ...
         c1, c2, c3 = st.columns(3)
         btn_clean   = c1.form_submit_button("🧹 Nettoyer lignes vides")
         btn_refresh = c2.form_submit_button("🔄 Recharger depuis la base")
         btn_save    = c3.form_submit_button("💾 Enregistrer dans la base")
 
-        # Enrichissement depuis le SKU choisi
         def enrich(df: pd.DataFrame) -> pd.DataFrame:
             if df is None or df.empty:
                 return pd.DataFrame(columns=base_cols)
@@ -1147,13 +1144,11 @@ with tab_bom:
             df["item_name"]     = df["component_sku"].map(name_by_id)
             df["unit"]          = df["component_sku"].map(unit_by_id)
             df["qty_per_unit"]  = pd.to_numeric(df["qty_per_unit"], errors="coerce").fillna(0.0)
-            # Ordre des colonnes normalisé
             for c in base_cols:
                 if c not in df.columns:
                     df[c] = "" if c in ("item_name","unit","description") else 0.0
             return df[base_cols]
 
-        # Nettoyer lignes vides / qty=0 et dédoublonner
         if btn_clean:
             tmp = enrich(edited_df)
             tmp = tmp[(tmp["component_sku"].notna()) & (tmp["component_sku"] != "") & (tmp["qty_per_unit"] > 0)]
@@ -1161,12 +1156,10 @@ with tab_bom:
             st.session_state[state_key] = tmp.reset_index(drop=True)
             st.success("Lignes vides et quantités nulles supprimées.")
 
-        # Recharger depuis la DB (sans rerun)
         if btn_refresh:
             _load_bom_full_into_state(table_choice)
             st.success("Rechargé depuis la base.")
 
-        # Enregistrer en base (remplacement complet de la table)
         if btn_save:
             try:
                 to_save = enrich(edited_df)
@@ -1180,7 +1173,7 @@ with tab_bom:
                         st.toast("BOM enregistrée")
                     except Exception:
                         pass
-                    _load_bom_full_into_state(table_choice)  # pas de st.rerun()
+                    _load_bom_full_into_state(table_choice)
             except Exception as e:
                 st.error(f"Erreur lors de l’enregistrement : {e}")
 
