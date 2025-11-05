@@ -1070,222 +1070,39 @@ def _load_bom_full_into_state(table_name: str):
 
 # =============================== ONGLET BOM ===============================
 with tab_bom:
-    st.subheader("Bill of materials")
+    st.subheader("BOM — édition simple")
 
-    # --- Tables BOM autorisées (centralisées) ---
+    # Tables BOM autorisées
     BOM_TABLES = ["bom_gmq_one", "bom_gmq_live", "bom_antenne", "bom_kit_batterie"]
 
-    # Choix de la table à éditer
-    table_choice = st.radio(
-        "Table BOM à modifier",
-        options=BOM_TABLES,
-        horizontal=True,
-        key="bom_table_choice",
-    )
+    # Choix de la table
+    table_choice = st.radio("Table à modifier", BOM_TABLES, horizontal=True, key="bom_table_choice_simple")
 
-    # ---------- Référentiel composants ----------
+    # Référentiel composants (SKU -> Nom, Unité)
     stock_df = get_stock_components().copy()
     stock_df["id"] = stock_df["id"].astype(str)
     name_by_id = dict(zip(stock_df["id"], stock_df["item_name"]))
     unit_by_id = dict(zip(stock_df["id"], stock_df["unit"]))
 
-    # options triées par nom + placeholder vide autorisé
-    sku_options = sorted(stock_df["id"].tolist(), key=lambda s: (name_by_id.get(s) or "").lower())
-    sku_options = [""] + sku_options  # autorise l'état "Choisir…" (visuel via format_func)
+    # Options pour le select SKU (triées par nom), on autorise "" pour laisser vide avant choix
+    sku_options = [""] + sorted(stock_df["id"].tolist(), key=lambda s: (name_by_id.get(s) or "").lower())
 
-    # ---------- State & chargement contrôlé ----------
-    state_key = f"bom_full_df_{table_choice}"
-    if "bom_last_table" not in st.session_state:
-        st.session_state["bom_last_table"] = table_choice
-
-    # première fois pour cette table
+    # État local : DataFrame en édition
+    state_key = f"bom_simple_df_{table_choice}"
     if state_key not in st.session_state:
-        _load_bom_full_into_state(table_choice)
-
-    # si changement de table -> recharger uniquement celle-ci
-    if st.session_state["bom_last_table"] != table_choice:
-        _load_bom_full_into_state(table_choice)
-        st.session_state["bom_last_table"] = table_choice
-
-    # s'assurer des colonnes attendues dans le brouillon local
-    base_cols = ["component_sku", "item_name", "unit", "qty_per_unit", "description"]
-    for c in base_cols:
-        if c not in st.session_state[state_key].columns:
-            st.session_state[state_key][c] = [] if c in ("item_name", "unit", "description") else 0.0
-
-    # ---------- UTILS ----------
-    def enrich(df: pd.DataFrame) -> pd.DataFrame:
-        """Aligne les colonnes, applique défauts, complète nom/unité depuis le référentiel."""
-        if df is None or df.empty:
-            return pd.DataFrame(columns=base_cols)
-        df = df.copy()
-        # tolère le placeholder vide
-        df["component_sku"] = df["component_sku"].astype(str).fillna("")
-        # quantité: parse + défaut 1.0 si vide
-        df["qty_per_unit"] = pd.to_numeric(df["qty_per_unit"], errors="coerce").fillna(1.0)
-        # enrichissements
-        df["item_name"] = df["component_sku"].map(name_by_id)
-        df["unit"]      = df["component_sku"].map(unit_by_id)
-        # colonnes manquantes & ordre canonique
+        # charge depuis la base (fonction existante côté app)
+        df_db = get_bom_full(table_choice)  # doit retourner cols: component_sku, qty_per_unit, description (le reste optionnel)
+        # normalise colonnes
+        base_cols = ["component_sku", "item_name", "unit", "qty_per_unit", "description"]
         for c in base_cols:
-            if c not in df.columns:
-                df[c] = "" if c in ("item_name", "unit", "description") else 0.0
-        return df[base_cols]
+            if c not in df_db.columns:
+                df_db[c] = "" if c in ("item_name", "unit", "description") else 0.0
+        # enrichit nom/unité au premier chargement
+        df_db["component_sku"] = df_db["component_sku"].astype(str)
+        df_db["item_name"] = df_db["component_sku"].map(name_by_id)
+        df_db["unit"]      = df_db["component_sku"].map(unit_by_id)
+        df_db["qty]()_
 
-    # ----------------------------------------------------------------------
-    # 1) FORMULAIRE DE SÉLECTION (facultatif, aucun rerun tant que Submit pas cliqué)
-    # ----------------------------------------------------------------------
-    st.markdown("### 1) Sélectionner des composants à ajouter (optionnel)")
-    with st.form("form_select_add", clear_on_submit=False):
-        cat_cols = ["id", "item_name", "unit"]
-        cat_view = stock_df[cat_cols].rename(columns={"id": "SKU", "item_name": "Nom", "unit": "Unité"}).copy()
-        cat_view["Sélectionner"] = False
-        cat_view["Quantité par unité"] = 1.0
-
-        cat_help = st.checkbox("Afficher tout le catalogue (sinon filtrer par recherche)", value=False)
-        if not cat_help:
-            q = st.text_input("🔎 Rechercher (SKU ou nom)", "")
-            if q.strip():
-                qlow = q.lower()
-                mask = (
-                    cat_view["SKU"].fillna("").str.lower().str.contains(qlow) |
-                    cat_view["Nom"].fillna("").str.lower().str.contains(qlow)
-                )
-                cat_view = cat_view[mask]
-
-        selection_df = st.data_editor(
-            cat_view,
-            use_container_width=True,
-            num_rows="fixed",
-            column_config={
-                "Sélectionner": st.column_config.CheckboxColumn(),
-                "Quantité par unité": st.column_config.NumberColumn(min_value=0.0, step=0.1),
-            },
-            hide_index=True,
-            key=f"catalog_editor_{table_choice}",
-        )
-
-        csel1, csel2 = st.columns([1, 1])
-        with csel1:
-            default_qty = st.number_input(
-                "Quantité par défaut pour la sélection",
-                min_value=0.0, step=1.0, value=1.0,
-                key="bom_default_qty_all"
-            )
-        with csel2:
-            apply_default = st.form_submit_button("Appliquer la quantité par défaut aux lignes cochées")
-            if apply_default and not selection_df.empty:
-                mask = selection_df["Sélectionner"] == True
-                selection_df.loc[mask, "Quantité par unité"] = float(default_qty)
-                st.session_state[f"catalog_editor_{table_choice}"] = selection_df
-
-        submit_add = st.form_submit_button("➕ Ajouter à l’édition (local)")
-        if submit_add:
-            current = st.session_state[state_key].copy()
-            existing = set(current["component_sku"].astype(str)) if not current.empty else set()
-            picked = selection_df[selection_df["Sélectionner"] == True].copy()
-
-            if picked.empty:
-                st.info("Aucun composant sélectionné.")
-            else:
-                picked["Quantité par unité"] = pd.to_numeric(
-                    picked["Quantité par unité"], errors="coerce"
-                ).fillna(0.0)
-
-                to_add_rows = []
-                for _, r in picked.iterrows():
-                    sku = str(r["SKU"])
-                    if sku in existing:
-                        continue
-                    qty = float(r["Quantité par unité"])
-                    to_add_rows.append({
-                        "component_sku": sku,
-                        "item_name": name_by_id.get(sku, "??"),
-                        "unit": unit_by_id.get(sku, ""),
-                        "qty_per_unit": qty,
-                        "description": "",
-                    })
-
-                if to_add_rows:
-                    add_rows = pd.DataFrame(to_add_rows)
-                    st.session_state[state_key] = pd.concat([current, add_rows], ignore_index=True)
-                    st.success(f"{len(to_add_rows)} composant(s) ajouté(s) à l’édition.")
-                else:
-                    st.info("Tous les composants cochés existent déjà dans l’édition.")
-
-    # ----------------------------------------------------------------------
-    # 2) ÉDITEUR UNIQUE (bouton +) PUIS ENREGISTRER
-    # ----------------------------------------------------------------------
-    st.markdown("### 2) Éditer la BOM (local) puis enregistrer")
-    with st.form("bom_single_table", clear_on_submit=False):
-        edited_df = st.data_editor(
-            st.session_state[state_key],
-            num_rows="dynamic",            # ← bouton +
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "component_sku": st.column_config.SelectboxColumn(
-                    "SKU composant",
-                    options=sku_options,
-                    format_func=lambda v: "Choisir…" if not v else f"{name_by_id.get(str(v), '??')} — {v}",
-                    help="Choisir un composant dans le stock",
-                ),
-                # ✅ corrigé : pas de placeholder ici
-                "description": st.column_config.TextColumn("Description"),
-                "item_name": st.column_config.TextColumn("Nom composant", disabled=True),
-                "unit": st.column_config.TextColumn("Unité", disabled=True),
-                # ✅ pas de default ici non plus
-                "qty_per_unit": st.column_config.NumberColumn(
-                    "Quantité par unité", min_value=0.0, step=0.1
-                ),
-            },
-            key=f"bom_editor_single_{table_choice}",
-        )
-    
-        c1, c2, c3 = st.columns(3)
-        btn_clean   = c1.form_submit_button("🧹 Nettoyer lignes vides")
-        btn_refresh = c2.form_submit_button("🔄 Recharger depuis la base")
-        btn_save    = c3.form_submit_button("💾 Enregistrer dans la base")
-    
-        if btn_clean:
-            tmp = enrich(edited_df)
-            tmp = tmp[(tmp["component_sku"] != "") & (tmp["qty_per_unit"] > 0)]
-            tmp = tmp.drop_duplicates(subset=["component_sku"], keep="last")
-            st.session_state[state_key] = tmp.reset_index(drop=True)
-            st.success("Lignes vides et quantités nulles supprimées.")
-    
-        if btn_refresh:
-            _load_bom_full_into_state(table_choice)
-            st.success("Rechargé depuis la base.")
-    
-        if btn_save:
-            try:
-                to_save = enrich(edited_df)
-    
-                # validations anti-erreur
-                if (to_save["component_sku"] == "").any():
-                    st.error("Certains composants n’ont pas de SKU défini. Complète les lignes ‘Choisir…’ ou supprime-les.")
-                else:
-                    dups_mask = to_save["component_sku"].duplicated(keep=False)
-                    if dups_mask.any():
-                        dup_list = sorted(to_save.loc[dups_mask, "component_sku"].unique().tolist())
-                        st.error(f"Doublons détectés sur SKU : {', '.join(dup_list)}. Déduplique avant d’enregistrer.")
-                    elif (to_save["qty_per_unit"] <= 0).any():
-                        st.error("Des lignes ont une quantité ≤ 0. Corrige-les ou utilise ‘Nettoyer lignes vides’.")
-                    else:
-                        final = to_save[(to_save["component_sku"] != "") & (to_save["qty_per_unit"] > 0)]
-                        n = save_bom_full_replace(table_choice, final, stock_df)
-                        if n == 0 and (final is None or final.empty):
-                            st.warning("Éditeur vide → la table n’a pas été modifiée.")
-                        else:
-                            st.success(f"Table {table_choice} enregistrée ({n} ligne(s)).")
-                            try:
-                                st.toast("BOM enregistrée")
-                            except Exception:
-                                pass
-                            _load_bom_full_into_state(table_choice)  # rafraîchit le state sans rerun
-            except Exception as e:
-                st.error(f"Erreur lors de l’enregistrement : {e}")
 
 
 
