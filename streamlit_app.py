@@ -205,25 +205,24 @@ def _expand_in_clause(sql: str, field: str, values: List[str], param_prefix: str
     return sql
 
 
-def get_mouvements_filtered(d_from: date, d_to: date, types: List[str],
-                            sku_like: str | None, responsable: str | None) -> pd.DataFrame:
-    q = (
-        """
-        SELECT id, date, sku, type, qty, ref, location, mo_id, responsable
-        FROM mouvements
-        WHERE date::date BETWEEN :dfrom AND :dto
-        """
-    )
-    params: Dict[str, Any] = {"dfrom": d_from, "dto": d_to}
+def get_mouvements_filtered(dfrom: date, dto: date, types: list, skulike: str = None, responsable: str = None) -> pd.DataFrame:
+    q = """
+    SELECT id, date, sku, type, qty, ref, location, moid, responsable
+    FROM mouvements
+    WHERE date BETWEEN :dfrom AND :dto
+    """
+    params: dict = {"dfrom": dfrom, "dto": dto}
     if types:
-        # enum movement_type => valeurs 'IN'/'OUT'
-        norm = [str(t).upper() for t in types]
-        q = _expand_in_clause(q, "type", norm, "type", params)
-    if sku_like and sku_like.strip():
-        q += " AND sku ILIKE :sk"
-        params["sk"] = f"%{sku_like.strip()}%"
-    if responsable and responsable != "(Tous)":
-        q += " AND responsable = :resp"
+        norm = [t.upper() for t in types]
+        in_clause = ','.join([f":type{i}" for i in range(len(norm))])
+        q += f" AND type IN ({in_clause}) "
+        for i, n in enumerate(norm):
+            params[f"type{i}"] = n
+    if skulike and skulike.strip():
+        q += " AND sku ILIKE :sk "
+        params["sk"] = f"%{skulike.strip()}%"
+    if responsable and responsable.strip() and responsable != "Tous":
+        q += " AND responsable = :resp "
         params["resp"] = responsable
     q += " ORDER BY date DESC"
     return fetch_df(q, params)
@@ -375,51 +374,52 @@ with tab_dash:
 # ---- MOUVEMENTS (form + filtres + tableau)
 with tab_moves:
     st.header("Mouvements")
-    resp_list = get_responsables() or ["Aymane", "Joslain", "Lise", "Robin"]
+    resplist = get_responsables() or ["Aymane", "Joslain", "Lise", "Robin"]
     stock_df = get_stock()
 
     st.subheader("Ajouter un mouvement")
     with st.form("mv_form"):
-        col_a, col_b = st.columns(2)
-        sku = col_a.selectbox("SKU", stock_df["sku"].astype(str).tolist())
-        responsable = col_b.selectbox("Responsable", resp_list, index=0)
-        move_type = st.radio("Type", ["IN", "OUT"], horizontal=True)
+        cola, colb = st.columns(2)
+        sku = cola.selectbox("SKU", stock_df["sku"].astype(str).tolist())
+        responsable = colb.selectbox("Responsable", resplist, index=0)
+        movetype = st.radio("Type", ("IN", "OUT"), horizontal=True)
         qty = st.number_input("Quantité", min_value=0.0, step=1.0)
         ref = st.text_input("Référence", value="MANUAL")
         loc = st.text_input("Emplacement", value="ENTREPOT")
         submitted = st.form_submit_button("Enregistrer")
         if submitted:
-            if qty <= 0:
+            if qty == 0:
                 st.error("La quantité doit être > 0.")
             else:
                 try:
-                    new_qty = record_movement_and_update(sku, move_type, qty, ref, loc, responsable)
-                    st.success(f"Mouvement {move_type} enregistré. Nouveau stock {sku} = {new_qty}")
+                    newqty = record_movement_and_update(sku, movetype, qty, ref, loc, responsable)
+                    st.success(f"Mouvement {movetype} enregistré. Nouveau stock {sku}: {newqty}.")
                     st.toast("Mouvement enregistré")
                 except Exception as e:
                     st.error(str(e))
 
     st.divider()
     st.subheader("Historique des mouvements")
-    mv_all = fetch_df("SELECT MIN(date)::date AS dmin, MAX(date)::date AS dmax FROM mouvements")
-    default_from = (mv_all.get("dmin").iat[0] if not mv_all.empty else None) or (date.today() - timedelta(days=30))
-    default_to   = (mv_all.get("dmax").iat[0] if not mv_all.empty else None) or date.today()
-
-    # === [REF:MV-FILTERS] Historique des mouvements ===
+    mvall = fetch_df("SELECT MIN(date) AS dmin, MAX(date) AS dmax FROM mouvements")
+    default_from = mvall.get("dmin").iat[0] if not mvall.empty else date.today() - timedelta(days=30)
+    default_to = mvall.get("dmax").iat[0] if not mvall.empty else date.today()
     c1, c2, c3 = st.columns(3)
-    d_from = c1.date_input("Du", value=default_from, key="mv_hist_from")           # REF:MV_FROM
-    d_to   = c2.date_input("Au", value=default_to,   key="mv_hist_to")             # REF:MV_TO
-    types  = c3.multiselect("Type", options=["IN","OUT"], 
-                            default=["IN","OUT"], key="mv_hist_types")             # REF:MV_TYPES
-    
+    dfrom = c1.date_input("Du", value=default_from, key="mvhistfrom")
+    dto = c2.date_input("Au", value=default_to, key="mvhistto")
+    types = c3.multiselect("Type", options=["IN", "OUT"], default=["IN", "OUT"], key="mvhisttypes")
     c4, c5 = st.columns(2)
-    sku_filter = c4.text_input("Filtre SKU (contient)", "", key="mv_hist_sku")     # REF:MV_SKU
-    resp_opts  = ["(Tous)"] + resp_list
-    resp_pick  = c5.selectbox("Responsable", resp_opts, index=0, key="mv_hist_resp")  # REF:MV_RESP
+    skufilter = c4.text_input("Filtre SKU contient", "", key="mvhistsku")
+    respopts = ["Tous"] + resplist
+    resppick = c5.selectbox("Responsable", respopts, index=0, key="mvhistresp")
 
+    mvview = get_mouvements_filtered(
+        dfrom, dto, types, skufilter, resppick if resppick != "Tous" else None
+    )
+    # Renomme "ref" pour l'affichage en DataFrame
+    if not mvview.empty:
+        mvview = mvview.rename(columns={"ref": "Référence"})
+    st.dataframe(mvview, use_container_width=True)
 
-    mv_view = get_mouvements_filtered(d_from, d_to, types, sku_filter, resp_pick if resp_pick != "(Tous)" else None)
-    st.dataframe(mv_view, use_container_width=True)
     
 
 # === ACCESSOIRES (helpers) ===
