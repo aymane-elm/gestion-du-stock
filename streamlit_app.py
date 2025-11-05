@@ -1070,38 +1070,115 @@ def _load_bom_full_into_state(table_name: str):
 
 # =============================== ONGLET BOM ===============================
 with tab_bom:
-    st.subheader("BOM — édition simple")
+    st.subheader("BOM — mode ultra simple")
 
-    # Tables BOM autorisées
+    # --- tables disponibles ---
     BOM_TABLES = ["bom_gmq_one", "bom_gmq_live", "bom_antenne", "bom_kit_batterie"]
 
-    # Choix de la table
-    table_choice = st.radio("Table à modifier", BOM_TABLES, horizontal=True, key="bom_table_choice_simple")
+    table_choice = st.radio("Table à modifier", BOM_TABLES, horizontal=True, key="bom_table_choice_ultra")
 
-    # Référentiel composants (SKU -> Nom, Unité)
+    # --- référentiel composants (pour l'affichage Nom/Unité + select SKU) ---
     stock_df = get_stock_components().copy()
     stock_df["id"] = stock_df["id"].astype(str)
     name_by_id = dict(zip(stock_df["id"], stock_df["item_name"]))
     unit_by_id = dict(zip(stock_df["id"], stock_df["unit"]))
-
-    # Options pour le select SKU (triées par nom), on autorise "" pour laisser vide avant choix
+    # on autorise "" pour laisser la cellule vide avant choix
     sku_options = [""] + sorted(stock_df["id"].tolist(), key=lambda s: (name_by_id.get(s) or "").lower())
 
-    # État local : DataFrame en édition
-    state_key = f"bom_simple_df_{table_choice}"
+    # --- state minimal (une seule clé par table) ---
+    state_key = f"bom_ultra_{table_choice}"
     if state_key not in st.session_state:
-        # charge depuis la base (fonction existante côté app)
-        df_db = get_bom_full(table_choice)  # doit retourner cols: component_sku, qty_per_unit, description (le reste optionnel)
-        # normalise colonnes
-        base_cols = ["component_sku", "item_name", "unit", "qty_per_unit", "description"]
+        # charge la BOM depuis la base
+        db = get_bom_full(table_choice)
+        # colonnes minimales
+        base_cols = ["component_sku", "qty_per_unit", "description"]
         for c in base_cols:
-            if c not in df_db.columns:
-                df_db[c] = "" if c in ("item_name", "unit", "description") else 0.0
-        # enrichit nom/unité au premier chargement
-        df_db["component_sku"] = df_db["component_sku"].astype(str)
-        df_db["item_name"] = df_db["component_sku"].map(name_by_id)
-        df_db["unit"]      = df_db["component_sku"].map(unit_by_id)
-        df_db["qty]()_
+            if c not in db.columns:
+                db[c] = "" if c == "description" else 0.0
+        # enrichissement affichage
+        db["component_sku"] = db["component_sku"].astype(str)
+        db["item_name"] = db["component_sku"].map(name_by_id)
+        db["unit"]      = db["component_sku"].map(unit_by_id)
+        db["qty_per_unit"] = pd.to_numeric(db["qty_per_unit"], errors="coerce").fillna(1.0)
+        st.session_state[state_key] = db[["component_sku","item_name","unit","qty_per_unit","description"]].copy()
+
+    # --- actions simples ---
+    cols = st.columns(2)
+    if cols[0].button("➕ Ajouter une ligne"):
+        df = st.session_state[state_key]
+        # ajoute une ligne vide (qty à 1.0 pour confort)
+        st.session_state[state_key] = pd.concat([
+            df,
+            pd.DataFrame([{
+                "component_sku": "",
+                "item_name": "",
+                "unit": "",
+                "qty_per_unit": 1.0,
+                "description": ""
+            }])
+        ], ignore_index=True)
+
+    if cols[1].button("💾 Enregistrer"):
+        try:
+            df = st.session_state[state_key].copy()
+            # normalise
+            df["component_sku"] = df["component_sku"].astype(str).fillna("")
+            df["qty_per_unit"]  = pd.to_numeric(df["qty_per_unit"], errors="coerce").fillna(0.0)
+
+            # valide (pas de SKU vide, pas de qté <=0)
+            valid = df[(df["component_sku"] != "") & (df["qty_per_unit"] > 0)].copy()
+            # dédoublonne par SKU (garde la dernière)
+            if not valid.empty:
+                valid = valid.drop_duplicates(subset=["component_sku"], keep="last")
+
+            # on ne sauvegarde que les champs utiles
+            to_save = valid[["component_sku","qty_per_unit","description"]]
+            n = save_bom_full_replace(table_choice, to_save, stock_df)
+            st.success(f"Enregistré ({n} ligne(s)).")
+
+            # recharge depuis la DB pour repartir propre
+            db = get_bom_full(table_choice)
+            for c in ["component_sku","qty_per_unit","description"]:
+                if c not in db.columns:
+                    db[c] = "" if c == "description" else 0.0
+            db["component_sku"] = db["component_sku"].astype(str)
+            db["item_name"] = db["component_sku"].map(name_by_id)
+            db["unit"]      = db["component_sku"].map(unit_by_id)
+            db["qty_per_unit"] = pd.to_numeric(db["qty_per_unit"], errors="coerce").fillna(1.0)
+            st.session_state[state_key] = db[["component_sku","item_name","unit","qty_per_unit","description"]].copy()
+        except Exception as e:
+            st.error(f"Erreur d’enregistrement : {e}")
+
+    # --- tableau unique (pas de form, pas de placeholder interdit) ---
+    edited = st.data_editor(
+        st.session_state[state_key],
+        num_rows="dynamic",
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "component_sku": st.column_config.SelectboxColumn(
+                "SKU composant",
+                options=sku_options,
+                format_func=lambda v: "Choisir…" if not v else f"{name_by_id.get(str(v), '??')} — {v}",
+                help="Sélectionner un composant"
+            ),
+            "item_name": st.column_config.TextColumn("Nom", disabled=True),
+            "unit": st.column_config.TextColumn("Unité", disabled=True),
+            "qty_per_unit": st.column_config.NumberColumn("Qté / unité", min_value=0.0, step=0.1),
+            "description": st.column_config.TextColumn("Description"),
+        },
+        key=f"bom_ultra_editor_{table_choice}",
+    )
+
+    # mise à jour d’affichage minimale (remplit Nom/Unité pendant l’édition)
+    if edited is not None and not edited.empty:
+        edited = edited.copy()
+        edited["component_sku"] = edited["component_sku"].astype(str).fillna("")
+        edited["item_name"] = edited["component_sku"].map(name_by_id)
+        edited["unit"]      = edited["component_sku"].map(unit_by_id)
+        edited["qty_per_unit"] = pd.to_numeric(edited["qty_per_unit"], errors="coerce").fillna(1.0)
+        st.session_state[state_key] = edited
+
 
 
 
