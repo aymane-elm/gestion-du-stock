@@ -982,7 +982,6 @@ with tab_clients:
 # ============================ HELPERS BOM ============================
 
 # Helper pour lister les colonnes d'une table (PostgreSQL / SQLite compatibles)
-
 def get_stock_components() -> pd.DataFrame:
     """
     Colonnes normalisées pour l'UI: id (=sku), item_name (=name), unit.
@@ -1070,8 +1069,8 @@ def _load_bom_full_into_state(table_name: str):
 # =============================== ONGLET BOM ===============================
 with tab_bom:
     st.subheader("Bill of materials")
-
     BOM_TABLES = ["bom_gmq_one", "bom_gmq_live", "bom_antenne", "bom_kit_batterie"]
+
     table_choice = st.radio(
         "Table BOM à modifier",
         options=BOM_TABLES,
@@ -1082,8 +1081,8 @@ with tab_bom:
     stock_df = get_stock_components()
     stock_df["id"] = stock_df["id"].astype(str)
     sku_options = stock_df["id"].tolist()
-    name_by_id = dict(zip(stock_df["id"], stock_df["item_name"]))
-    unit_by_id = dict(zip(stock_df["id"], stock_df["unit"]))
+    name_by_id  = dict(zip(stock_df["id"], stock_df["item_name"]))
+    unit_by_id  = dict(zip(stock_df["id"], stock_df["unit"]))
 
     state_key = f"bom_full_df_{table_choice}"
     if "bom_last_table" not in st.session_state:
@@ -1116,9 +1115,7 @@ with tab_bom:
                     format_func=lambda v: f"{name_by_id.get(str(v), '??')} — {v}",
                     help="Choisir un composant dans le stock",
                 ),
-                "description": st.column_config.TextColumn(
-                    "Description", help="Texte libre du composant", placeholder="Optionnel"
-                ),
+                "description": st.column_config.TextColumn("Description"),
                 "item_name": st.column_config.TextColumn("Nom composant", disabled=True),
                 "unit": st.column_config.TextColumn("Unité", disabled=True),
                 "qty_per_unit": st.column_config.NumberColumn(
@@ -1173,6 +1170,7 @@ with tab_bom:
                     _load_bom_full_into_state(table_choice)
             except Exception as e:
                 st.error(f"Erreur lors de l’enregistrement : {e}")
+
 
 
 
