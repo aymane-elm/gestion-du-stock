@@ -1230,11 +1230,11 @@ with tab_bom:
                     format_func=lambda v: "Choisir…" if not v else f"{name_by_id.get(str(v), '??')} — {v}",
                     help="Choisir un composant dans le stock",
                 ),
-                # ❌ pas de placeholder ici (non supporté par ta version de Streamlit)
+                # ✅ corrigé : pas de placeholder ici
                 "description": st.column_config.TextColumn("Description"),
                 "item_name": st.column_config.TextColumn("Nom composant", disabled=True),
                 "unit": st.column_config.TextColumn("Unité", disabled=True),
-                # ❌ pas de default ici ; on gère la valeur par défaut dans enrich()
+                # ✅ pas de default ici non plus
                 "qty_per_unit": st.column_config.NumberColumn(
                     "Quantité par unité", min_value=0.0, step=0.1
                 ),
@@ -1286,6 +1286,7 @@ with tab_bom:
                             _load_bom_full_into_state(table_choice)  # rafraîchit le state sans rerun
             except Exception as e:
                 st.error(f"Erreur lors de l’enregistrement : {e}")
+
 
 
 
