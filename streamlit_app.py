@@ -990,12 +990,15 @@ def get_stock_components() -> pd.DataFrame:
     """
     return fetch_df(sql)
 
+
+BOM_TABLES = ["bom_gmq_one", "bom_gmq_live", "bom_antenne", "bom_kit_batterie"]
+
 def get_bom_full(table_name: str) -> pd.DataFrame:
     """
     Charge TOUTE la table BOM (bom_gmq_one | bom_gmq_live) avec les libellés depuis stock.
     Colonnes renvoyées: component_sku, item_name, unit, qty_per_unit, description
     """
-    if table_name not in {"bom_gmq_one", "bom_gmq_live"}:
+    if table_name not in BOM_TABLES :
         raise ValueError("Table BOM inconnue")
 
     sql = f"""
@@ -1017,7 +1020,7 @@ def save_bom_full_replace(table_name: str, df: pd.DataFrame, stock_df: pd.DataFr
     - Ne garde que les lignes avec component_sku ∈ stock.sku et qty_per_unit > 0.
     - Retourne le nombre de lignes insérées.
     """
-    if table_name not in {"bom_gmq_one", "bom_gmq_live"}:
+    if table_name not in BOM_TABLES:
         raise ValueError("Table BOM inconnue")
 
     if df is None or df.empty:
@@ -1067,7 +1070,7 @@ with tab_bom:
 
     table_choice = st.radio(
         "Table BOM à modifier",
-        options=["bom_gmq_one", "bom_gmq_live", "bom_antenne", "bom_kit_batterie"],
+        options=BOM_TABLES,
         horizontal=True,
         key="bom_table_choice",
     )
