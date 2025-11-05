@@ -205,34 +205,28 @@ def _expand_in_clause(sql: str, field: str, values: List[str], param_prefix: str
     return sql
 
 
-
-
-def get_mouvements_filtered(dfrom: date, dto: date, types: list, skulike: str = None, responsable: str = None) -> pd.DataFrame:
-    q = """
-    SELECT id, date, sku, type, qty, motif, location, moid, responsable
-    FROM mouvements
-    WHERE date BETWEEN :dfrom AND :dto
-    """
-    params: dict = {"dfrom": dfrom, "dto": dto}
-
+def get_mouvements_filtered(d_from: date, d_to: date, types: List[str],
+                            sku_like: str | None, responsable: str | None) -> pd.DataFrame:
+    q = (
+        """
+        SELECT id, date, sku, type, qty, ref, location, mo_id, responsable
+        FROM mouvements
+        WHERE date::date BETWEEN :dfrom AND :dto
+        """
+    )
+    params: Dict[str, Any] = {"dfrom": d_from, "dto": d_to}
     if types:
-        norm = [t.upper() for t in types]
-        in_clause = ','.join([f":type{i}" for i in range(len(norm))])
-        q += f" AND type IN ({in_clause}) "
-        for i, n in enumerate(norm):
-            params[f"type{i}"] = n
-
-    if skulike and skulike.strip():
-        q += " AND sku ILIKE :sk "
-        params["sk"] = f"%{skulike.strip()}%"
-
-    if responsable and responsable.strip() and responsable != "Tous":
-        q += " AND responsable = :resp "
+        # enum movement_type => valeurs 'IN'/'OUT'
+        norm = [str(t).upper() for t in types]
+        q = _expand_in_clause(q, "type", norm, "type", params)
+    if sku_like and sku_like.strip():
+        q += " AND sku ILIKE :sk"
+        params["sk"] = f"%{sku_like.strip()}%"
+    if responsable and responsable != "(Tous)":
+        q += " AND responsable = :resp"
         params["resp"] = responsable
-
     q += " ORDER BY date DESC"
     return fetch_df(q, params)
-
 
 
 def get_fabrications_filtered(d_from: date, d_to: date, products: List[str],
@@ -381,54 +375,51 @@ with tab_dash:
 # ---- MOUVEMENTS (form + filtres + tableau)
 with tab_moves:
     st.header("Mouvements")
-    resplist = get_responsables() or ["Aymane", "Joslain", "Lise", "Robin"]
+    resp_list = get_responsables() or ["Aymane", "Joslain", "Lise", "Robin"]
     stock_df = get_stock()
 
     st.subheader("Ajouter un mouvement")
     with st.form("mv_form"):
-        cola, colb = st.columns(2)
-        sku = cola.selectbox("SKU", stock_df["sku"].astype(str).tolist())
-        responsable = colb.selectbox("Responsable", resplist, index=0)
-        movetype = st.radio("Type", ("IN", "OUT"), horizontal=True)
+        col_a, col_b = st.columns(2)
+        sku = col_a.selectbox("SKU", stock_df["sku"].astype(str).tolist())
+        responsable = col_b.selectbox("Responsable", resp_list, index=0)
+        move_type = st.radio("Type", ["IN", "OUT"], horizontal=True)
         qty = st.number_input("Quantité", min_value=0.0, step=1.0)
-        motif = st.text_input("Motif", value="MANUAL")
+        ref = st.text_input("Référence", value="MANUAL")
         loc = st.text_input("Emplacement", value="ENTREPOT")
         submitted = st.form_submit_button("Enregistrer")
         if submitted:
-            if qty == 0:
+            if qty <= 0:
                 st.error("La quantité doit être > 0.")
             else:
                 try:
-                    newqty = record_movement_and_update(sku, movetype, qty, motif, loc, responsable)
-                    st.success(f"Mouvement {movetype} enregistré. Nouveau stock {sku}: {newqty}.")
+                    new_qty = record_movement_and_update(sku, move_type, qty, ref, loc, responsable)
+                    st.success(f"Mouvement {move_type} enregistré. Nouveau stock {sku} = {new_qty}")
                     st.toast("Mouvement enregistré")
                 except Exception as e:
                     st.error(str(e))
 
     st.divider()
     st.subheader("Historique des mouvements")
+    mv_all = fetch_df("SELECT MIN(date)::date AS dmin, MAX(date)::date AS dmax FROM mouvements")
+    default_from = (mv_all.get("dmin").iat[0] if not mv_all.empty else None) or (date.today() - timedelta(days=30))
+    default_to   = (mv_all.get("dmax").iat[0] if not mv_all.empty else None) or date.today()
 
-    mvall = fetch_df("SELECT MIN(date) AS dmin, MAX(date) AS dmax FROM mouvements")
-    default_from = mvall.get("dmin").iat[0] if not mvall.empty else date.today() - timedelta(days=30)
-    default_to = mvall.get("dmax").iat[0] if not mvall.empty else date.today()
+    # === [REF:MV-FILTERS] Historique des mouvements ===
     c1, c2, c3 = st.columns(3)
-    dfrom = c1.date_input("Du", value=default_from, key="mvhistfrom")
-    dto = c2.date_input("Au", value=default_to, key="mvhistto")
-    types = c3.multiselect("Type", options=["IN", "OUT"], default=["IN", "OUT"], key="mvhisttypes")
+    d_from = c1.date_input("Du", value=default_from, key="mv_hist_from")           # REF:MV_FROM
+    d_to   = c2.date_input("Au", value=default_to,   key="mv_hist_to")             # REF:MV_TO
+    types  = c3.multiselect("Type", options=["IN","OUT"], 
+                            default=["IN","OUT"], key="mv_hist_types")             # REF:MV_TYPES
+    
     c4, c5 = st.columns(2)
-    skufilter = c4.text_input("Filtre SKU contient", "", key="mvhistsku")
-    respopts = ["Tous"] + resplist
-    resppick = c5.selectbox("Responsable", respopts, index=0, key="mvhistresp")
-
-    mvview = get_mouvements_filtered(
-        dfrom, dto, types, skufilter, resppick if resppick != "Tous" else None
-    )
-    # Renomme "motif" pour l'affichage en DataFrame (label)
-    if not mvview.empty:
-        mvview = mvview.rename(columns={"motif": "Motif"})
-    st.dataframe(mvview, use_container_width=True)
+    sku_filter = c4.text_input("Filtre SKU (contient)", "", key="mv_hist_sku")     # REF:MV_SKU
+    resp_opts  = ["(Tous)"] + resp_list
+    resp_pick  = c5.selectbox("Responsable", resp_opts, index=0, key="mv_hist_resp")  # REF:MV_RESP
 
 
+    mv_view = get_mouvements_filtered(d_from, d_to, types, sku_filter, resp_pick if resp_pick != "(Tous)" else None)
+    st.dataframe(mv_view, use_container_width=True)
     
 
 # === ACCESSOIRES (helpers) ===
@@ -670,35 +661,37 @@ def to_excel_bytes(df):
 
 
 with tab_stock:
-    st.header("Stock")
-    st.subheader("Ajouter un article")
+    st.header("Stock") #titre
 
-    # LAYOUT COLONNES COMME AVANT
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with st.form(key="stock_add_form"):
-        sku = col1.text_input("SKU")
-        name = col2.text_input("Nom (libellé)")
-        unit = col3.text_input("Unité", value="pcs")
-        col4, col5 = st.columns([2, 1])
-        # Remplace l'input catégorie par un selectbox
-        cat_choices = ["Composant", "Produit fini", "Accessoire"]
-        category = col4.selectbox("Catégorie", cat_choices)
-        reorder_point = col5.number_input("Point de commande", value=0.0, step=1.0)
-        qty_on_hand = st.number_input("Stock initial", value=0.0, step=1.0)
-        description = st.text_area("Description", value="")
-        submit = st.form_submit_button("Ajouter au stock")
-        if submit:
-            add_stock_item(sku, name, unit, category, reorder_point, qty_on_hand, description)
-            st.success(f"{sku} ajouté au stock avec la catégorie {category}.")
+    st.subheader("Ajouter un article")
+    with st.form("stock_add"):
+        c1, c2, c3 = st.columns(3)
+        sku_new = c1.text_input("SKU *", "")
+        name_new = c2.text_input("Nom *", "")
+        unit_new = c3.text_input("Unité", value="pcs")
+        c4, c5, c6 = st.columns(3)
+        cat_new = c4.text_input("Catégorie", value="Component")
+        rop_new = c5.number_input("ReorderPoint", min_value=0.0, step=1.0, value=0.0)
+        qty_new = c6.number_input("QtyOnHand (initiale)", min_value=0.0, step=1.0, value=0.0)
+        desc_new = st.text_input("Description", "")
+        btn_add_stock = st.form_submit_button("Ajouter")
+
+        if btn_add_stock:
+            if not sku_new.strip() or not name_new.strip():
+                st.error("SKU et Nom sont obligatoires.")
+            else:
+                try:
+                    add_stock_item(sku_new.strip(), name_new.strip(), unit_new.strip(),
+                                   cat_new.strip(), float(rop_new), float(qty_new), (desc_new or None))
+                    st.success(f"Article {sku_new} ajouté.")
+                    st.toast("Article ajouté")
+                except Exception as e:
+                    st.error(str(e))
 
     st.divider()
-    st.subheader("Tableau du stock actuel")
-    stock_df = get_stock()
-    if not stock_df.empty:
-        st.dataframe(stock_df, use_container_width=True)
-    else:
-        st.info("Aucun produit en stock.")
 
+    st.subheader("Édition rapide")
+    stock_df = get_stock()
     edited = st.data_editor(
         stock_df,
         use_container_width=True,
@@ -1167,7 +1160,7 @@ with tab_bom:
 
 
 
-# ============ ONGLET IMPORTE ============== 
+# ============ ONGLET IMPORTE  
 with tab_importe:
     st.header("Importation totale du stock")
     st.caption("Importer un fichier Excel ou CSV pour REMPLACER/AJOUTER toute la table stock. Les colonnes suivantes sont OBLIGATOIRES : sku, name, unit, category, reorder_point, qty_on_hand, description.")
