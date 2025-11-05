@@ -207,7 +207,7 @@ def _expand_in_clause(sql: str, field: str, values: List[str], param_prefix: str
 
 def get_mouvements_filtered(dfrom: date, dto: date, types: list, skulike: str = None, responsable: str = None) -> pd.DataFrame:
     q = """
-    SELECT id, date, sku, type, qty, ref, location, moid, responsable
+    SELECT id, date, sku, type, qty, ref, location, mo_id, responsable
     FROM mouvements
     WHERE date BETWEEN :dfrom AND :dto
     """
