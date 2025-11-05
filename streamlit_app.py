@@ -205,28 +205,34 @@ def _expand_in_clause(sql: str, field: str, values: List[str], param_prefix: str
     return sql
 
 
-def get_mouvements_filtered(d_from: date, d_to: date, types: List[str],
-                            sku_like: str | None, responsable: str | None) -> pd.DataFrame:
-    q = (
-        """
-        SELECT id, date, sku, type, qty, ref, location, mo_id, responsable
-        FROM mouvements
-        WHERE date::date BETWEEN :dfrom AND :dto
-        """
-    )
-    params: Dict[str, Any] = {"dfrom": d_from, "dto": d_to}
+
+
+def get_mouvements_filtered(dfrom: date, dto: date, types: list, skulike: str = None, responsable: str = None) -> pd.DataFrame:
+    q = """
+    SELECT id, date, sku, type, qty, motif, location, moid, responsable
+    FROM mouvements
+    WHERE date BETWEEN :dfrom AND :dto
+    """
+    params: dict = {"dfrom": dfrom, "dto": dto}
+
     if types:
-        # enum movement_type => valeurs 'IN'/'OUT'
-        norm = [str(t).upper() for t in types]
-        q = _expand_in_clause(q, "type", norm, "type", params)
-    if sku_like and sku_like.strip():
-        q += " AND sku ILIKE :sk"
-        params["sk"] = f"%{sku_like.strip()}%"
-    if responsable and responsable != "(Tous)":
-        q += " AND responsable = :resp"
+        norm = [t.upper() for t in types]
+        in_clause = ','.join([f":type{i}" for i in range(len(norm))])
+        q += f" AND type IN ({in_clause}) "
+        for i, n in enumerate(norm):
+            params[f"type{i}"] = n
+
+    if skulike and skulike.strip():
+        q += " AND sku ILIKE :sk "
+        params["sk"] = f"%{skulike.strip()}%"
+
+    if responsable and responsable.strip() and responsable != "Tous":
+        q += " AND responsable = :resp "
         params["resp"] = responsable
+
     q += " ORDER BY date DESC"
     return fetch_df(q, params)
+
 
 
 def get_fabrications_filtered(d_from: date, d_to: date, products: List[str],
