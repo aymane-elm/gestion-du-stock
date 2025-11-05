@@ -1,7 +1,8 @@
-streamlit
-pandas
-numpy
-SQLAlchemy
-psycopg2-binary
-xlsxwriter
-openpyxl
+streamlit>=1.33,<2
+pandas>=2.2
+numpy>=2.0
+SQLAlchemy>=2.0
+psycopg2-binary>=2.9
+openpyxl>=3.1
+XlsxWriter>=3.1
+tzdata>=2024.1
