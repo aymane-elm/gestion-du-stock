@@ -375,51 +375,54 @@ with tab_dash:
 # ---- MOUVEMENTS (form + filtres + tableau)
 with tab_moves:
     st.header("Mouvements")
-    resp_list = get_responsables() or ["Aymane", "Joslain", "Lise", "Robin"]
+    resplist = get_responsables() or ["Aymane", "Joslain", "Lise", "Robin"]
     stock_df = get_stock()
 
     st.subheader("Ajouter un mouvement")
     with st.form("mv_form"):
-        col_a, col_b = st.columns(2)
-        sku = col_a.selectbox("SKU", stock_df["sku"].astype(str).tolist())
-        responsable = col_b.selectbox("Responsable", resp_list, index=0)
-        move_type = st.radio("Type", ["IN", "OUT"], horizontal=True)
+        cola, colb = st.columns(2)
+        sku = cola.selectbox("SKU", stock_df["sku"].astype(str).tolist())
+        responsable = colb.selectbox("Responsable", resplist, index=0)
+        movetype = st.radio("Type", ("IN", "OUT"), horizontal=True)
         qty = st.number_input("Quantité", min_value=0.0, step=1.0)
-        ref = st.text_input("Référence", value="MANUAL")
+        motif = st.text_input("Motif", value="MANUAL")  # remplace "Référence"
         loc = st.text_input("Emplacement", value="ENTREPOT")
         submitted = st.form_submit_button("Enregistrer")
         if submitted:
-            if qty <= 0:
+            if qty == 0:
                 st.error("La quantité doit être > 0.")
             else:
                 try:
-                    new_qty = record_movement_and_update(sku, move_type, qty, ref, loc, responsable)
-                    st.success(f"Mouvement {move_type} enregistré. Nouveau stock {sku} = {new_qty}")
+                    newqty = record_movement_and_update(sku, movetype, qty, motif, loc, responsable)
+                    st.success(f"Mouvement {movetype} enregistré. Nouveau stock {sku}: {newqty}.")
                     st.toast("Mouvement enregistré")
                 except Exception as e:
                     st.error(str(e))
 
     st.divider()
     st.subheader("Historique des mouvements")
-    mv_all = fetch_df("SELECT MIN(date)::date AS dmin, MAX(date)::date AS dmax FROM mouvements")
-    default_from = (mv_all.get("dmin").iat[0] if not mv_all.empty else None) or (date.today() - timedelta(days=30))
-    default_to   = (mv_all.get("dmax").iat[0] if not mv_all.empty else None) or date.today()
 
-    # === [REF:MV-FILTERS] Historique des mouvements ===
+    # Filtres historiques, tu peux adapter ici aussi le mot "Motif"
+    mvall = fetch_df("SELECT MIN(date) AS dmin, MAX(date) AS dmax FROM mouvements")
+    default_from = mvall.get("dmin").iat[0] if not mvall.empty else date.today() - timedelta(days=30)
+    default_to = mvall.get("dmax").iat[0] if not mvall.empty else date.today()
     c1, c2, c3 = st.columns(3)
-    d_from = c1.date_input("Du", value=default_from, key="mv_hist_from")           # REF:MV_FROM
-    d_to   = c2.date_input("Au", value=default_to,   key="mv_hist_to")             # REF:MV_TO
-    types  = c3.multiselect("Type", options=["IN","OUT"], 
-                            default=["IN","OUT"], key="mv_hist_types")             # REF:MV_TYPES
-    
+    dfrom = c1.date_input("Du", value=default_from, key="mvhistfrom")
+    dto = c2.date_input("Au", value=default_to, key="mvhistto")
+    types = c3.multiselect("Type", options=["IN", "OUT"], default=["IN", "OUT"], key="mvhisttypes")
     c4, c5 = st.columns(2)
-    sku_filter = c4.text_input("Filtre SKU (contient)", "", key="mv_hist_sku")     # REF:MV_SKU
-    resp_opts  = ["(Tous)"] + resp_list
-    resp_pick  = c5.selectbox("Responsable", resp_opts, index=0, key="mv_hist_resp")  # REF:MV_RESP
+    skufilter = c4.text_input("Filtre SKU contient", "", key="mvhistsku")
+    respopts = ["Tous"] + resplist
+    resppick = c5.selectbox("Responsable", respopts, index=0, key="mvhistresp")
 
+    mvview = get_mouvements_filtered(
+        dfrom, dto, types, skufilter, resppick if resppick != "Tous" else None
+    )
+    # Remplacement du libellé
+    if not mvview.empty:
+        mvview = mvview.rename(columns={"ref": "Motif"})
+    st.dataframe(mvview, use_container_width=True)
 
-    mv_view = get_mouvements_filtered(d_from, d_to, types, sku_filter, resp_pick if resp_pick != "(Tous)" else None)
-    st.dataframe(mv_view, use_container_width=True)
     
 
 # === ACCESSOIRES (helpers) ===
