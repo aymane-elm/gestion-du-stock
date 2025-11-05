@@ -1063,11 +1063,11 @@ def _load_bom_full_into_state(table_name: str):
 
 # =============================== ONGLET BOM ===============================
 with tab_bom:
-    st.subheader("BOM — GMQ (édition par table)")
+    st.subheader("Bill of materials ")
 
     table_choice = st.radio(
         "Table BOM à modifier",
-        options=["bom_gmq_one", "bom_gmq_live"],
+        options=["bom_gmq_one", "bom_gmq_live", "bom_antenne", "bom_kit_batterie"],
         horizontal=True,
         key="bom_table_choice",
     )
