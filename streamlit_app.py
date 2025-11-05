@@ -385,7 +385,7 @@ with tab_moves:
         responsable = colb.selectbox("Responsable", resplist, index=0)
         movetype = st.radio("Type", ("IN", "OUT"), horizontal=True)
         qty = st.number_input("Quantité", min_value=0.0, step=1.0)
-        motif = st.text_input("Motif", value="MANUAL")  # remplace "Référence"
+        motif = st.text_input("Motif", value="MANUAL")
         loc = st.text_input("Emplacement", value="ENTREPOT")
         submitted = st.form_submit_button("Enregistrer")
         if submitted:
@@ -402,7 +402,6 @@ with tab_moves:
     st.divider()
     st.subheader("Historique des mouvements")
 
-    # Filtres historiques, tu peux adapter ici aussi le mot "Motif"
     mvall = fetch_df("SELECT MIN(date) AS dmin, MAX(date) AS dmax FROM mouvements")
     default_from = mvall.get("dmin").iat[0] if not mvall.empty else date.today() - timedelta(days=30)
     default_to = mvall.get("dmax").iat[0] if not mvall.empty else date.today()
@@ -418,10 +417,11 @@ with tab_moves:
     mvview = get_mouvements_filtered(
         dfrom, dto, types, skufilter, resppick if resppick != "Tous" else None
     )
-    # Remplacement du libellé
+    # Renomme "motif" pour l'affichage en DataFrame (label)
     if not mvview.empty:
-        mvview = mvview.rename(columns={"ref": "Motif"})
+        mvview = mvview.rename(columns={"motif": "Motif"})
     st.dataframe(mvview, use_container_width=True)
+
 
     
 
