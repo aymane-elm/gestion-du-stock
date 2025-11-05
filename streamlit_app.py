@@ -1101,27 +1101,34 @@ with tab_bom:
         st.session_state["bom_last_table"] = table_choice
 
     # ----------------------------------------------------------------------
+     # ----------------------------------------------------------------------
     # 1) FORMULAIRE DE SÉLECTION (aucun rerun tant que Submit pas cliqué)
     # ----------------------------------------------------------------------
     st.markdown("### 1) Sélectionner des composants à ajouter")
     with st.form("form_select_add", clear_on_submit=False):
         # Petit "catalogue" avec cases à cocher et quantité
         cat_cols = ["id", "item_name", "unit"]
-        cat_view = stock_df[cat_cols].rename(columns={"id": "SKU", "item_name": "Nom", "unit": "Unité"}).copy()
+        # on force l'id en str au cas où
+        cat_view = stock_df[cat_cols].copy()
+        cat_view["id"] = cat_view["id"].astype(str)
+    
+        cat_view = cat_view.rename(columns={"id": "SKU", "item_name": "Nom", "unit": "Unité"})
         # colonnes de saisie utilisateur
         cat_view["Sélectionner"] = False
         cat_view["Quantité par unité"] = 1.0
-
+    
         cat_help = st.checkbox("Afficher tout le catalogue (sinon filtrer par recherche)", value=False)
         if not cat_help:
             q = st.text_input("🔎 Rechercher (SKU ou nom)", "")
             if q.strip():
                 qlow = q.lower()
-                cat_view = cat_view[
-                    cat_view["SKU"].str.lower().str.contains(qlow) |
-                    cat_view["Nom"].str.lower().str.contains(qlow)
-                ]
-
+                # .fillna("") pour éviter les erreurs sur .str.lower()
+                mask = (
+                    cat_view["SKU"].fillna("").str.lower().str.contains(qlow) |
+                    cat_view["Nom"].fillna("").str.lower().str.contains(qlow)
+                )
+                cat_view = cat_view[mask]
+    
         selection_df = st.data_editor(
             cat_view,
             use_container_width=True,
@@ -1133,10 +1140,14 @@ with tab_bom:
             hide_index=True,
             key=f"catalog_editor_{table_choice}",
         )
-
-        csel1, csel2 = st.columns([1,1])
+    
+        csel1, csel2 = st.columns([1, 1])
         with csel1:
-            default_qty = st.number_input("Quantité par défaut pour la sélection", min_value=0.0, step=1.0, value=1.0, key="bom_default_qty_all")
+            default_qty = st.number_input(
+                "Quantité par défaut pour la sélection",
+                min_value=0.0, step=1.0, value=1.0,
+                key="bom_default_qty_all"
+            )
         with csel2:
             apply_default = st.form_submit_button("Appliquer la quantité par défaut aux lignes cochées")
             if apply_default and not selection_df.empty:
@@ -1144,22 +1155,27 @@ with tab_bom:
                 selection_df.loc[mask, "Quantité par unité"] = float(default_qty)
                 # réinjecter dans session_state (pour réaffichage)
                 st.session_state[f"catalog_editor_{table_choice}"] = selection_df
-
+    
         submit_add = st.form_submit_button("➕ Ajouter à l’édition (local)")
         if submit_add:
             current = st.session_state[state_key].copy()
             existing = set(current["component_sku"].astype(str)) if not current.empty else set()
-
+    
             picked = selection_df[selection_df["Sélectionner"] == True].copy()
             if picked.empty:
                 st.info("Aucun composant sélectionné.")
             else:
+                # sécuriser la quantité
+                picked["Quantité par unité"] = pd.to_numeric(
+                    picked["Quantité par unité"], errors="coerce"
+                ).fillna(0.0)
+    
                 to_add_rows = []
                 for _, r in picked.iterrows():
                     sku = str(r["SKU"])
                     if sku in existing:
                         continue
-                    qty = float(r["Quantité par unité"] or 0.0)
+                    qty = float(r["Quantité par unité"])
                     to_add_rows.append({
                         "component_sku": sku,
                         "item_name": stock_id_to_name.get(sku, "??"),
@@ -1167,13 +1183,14 @@ with tab_bom:
                         "qty_per_unit": qty,
                         "description": "",
                     })
-
+    
                 if to_add_rows:
                     add_rows = pd.DataFrame(to_add_rows)
                     st.session_state[state_key] = pd.concat([current, add_rows], ignore_index=True)
                     st.success(f"{len(to_add_rows)} composant(s) ajouté(s) à l’édition.")
                 else:
                     st.info("Tous les composants cochés existent déjà dans l’édition.")
+
     # ----------------------------------------------------------------------
 
     # ----------------------------------------------------------------------
