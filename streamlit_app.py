@@ -983,9 +983,7 @@ with tab_clients:
 
 # Helper pour lister les colonnes d'une table (PostgreSQL / SQLite compatibles)
 def get_stock_components() -> pd.DataFrame:
-    """
-    Colonnes normalisées pour l'UI: id (=sku), item_name (=name), unit.
-    """
+    """Retourne les composants du stock pour sélection BOM."""
     sql = """
         SELECT
             sku::text   AS id,
@@ -999,20 +997,16 @@ def get_stock_components() -> pd.DataFrame:
 BOM_TABLES = ["bom_gmq_one", "bom_gmq_live", "bom_antenne", "bom_kit_batterie"]
 
 def get_bom_full(table_name: str) -> pd.DataFrame:
-    """
-    Charge TOUTE la table BOM (bom_gmq_one | bom_gmq_live | etc.) avec les libellés depuis stock.
-    Colonnes renvoyées: component_sku, item_name, unit, qty_per_unit, description
-    """
+    """Charge la BOM complète d'une table, avec noms et unités liés au stock."""
     if table_name not in BOM_TABLES:
         raise ValueError("Table BOM inconnue")
-
     sql = f"""
         SELECT
-            b.component_sku::text            AS component_sku,
-            COALESCE(s.name, '??')          AS item_name,
-            COALESCE(s.unit, '')            AS unit,
-            COALESCE(b.qty_per_unit, 1)     AS qty_per_unit,
-            COALESCE(b.description, '')     AS description
+            b.component_sku::text    AS component_sku,
+            COALESCE(s.name, '??')  AS item_name,
+            COALESCE(s.unit, '')    AS unit,
+            COALESCE(b.qty_per_unit, 1) AS qty_per_unit,
+            COALESCE(b.description, '') AS description
         FROM {table_name} b
         LEFT JOIN stock s ON s.sku = b.component_sku
         ORDER BY item_name
@@ -1020,29 +1014,19 @@ def get_bom_full(table_name: str) -> pd.DataFrame:
     return fetch_df(sql)
 
 def save_bom_full_replace(table_name: str, df: pd.DataFrame, stock_df: pd.DataFrame) -> int:
-    """
-    Remplace la table BOM par le contenu de df.
-    - Ne garde que les lignes avec component_sku ∈ stock.sku et qty_per_unit > 0.
-    - Retourne le nombre de lignes insérées.
-    """
+    """Remplace toute la BOM par df. Validation simple sur la présence en stock et qty>0."""
     if table_name not in BOM_TABLES:
         raise ValueError("Table BOM inconnue")
-
     if df is None or df.empty:
         return 0
-
     valid_skus = set(stock_df["id"].astype(str))
     work = df.copy()
-
-    # Colonnes minimales
     for c in ["component_sku", "qty_per_unit", "description"]:
         if c not in work.columns:
             work[c] = "" if c != "qty_per_unit" else 0
-
     work["component_sku"] = work["component_sku"].astype(str).str.strip()
     work = work[work["component_sku"].isin(valid_skus)]
     work = work[pd.to_numeric(work["qty_per_unit"], errors="coerce").fillna(0) > 0]
-
     rows = [
         {
             "component_sku": str(r["component_sku"]),
@@ -1051,7 +1035,6 @@ def save_bom_full_replace(table_name: str, df: pd.DataFrame, stock_df: pd.DataFr
         }
         for _, r in work.iterrows()
     ]
-
     with engine.begin() as conn:
         conn.execute(text(f"DELETE FROM {table_name}"))
         if rows:
@@ -1063,6 +1046,9 @@ def save_bom_full_replace(table_name: str, df: pd.DataFrame, stock_df: pd.DataFr
     return len(rows)
 
 def _load_bom_full_into_state(table_name: str):
+    state_key = f"bom_full_df_{table_name}"
+    st.session_state[state_key] = get_bom_full(table_name)
+
     state_key = f"bom_full_df_{table_name}"
     st.session_state[state_key] = get_bom_full(table_name)
 
