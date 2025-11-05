@@ -670,7 +670,8 @@ with tab_stock:
         name_new = c2.text_input("Nom *", "")
         unit_new = c3.text_input("Unité", value="pcs")
         c4, c5, c6 = st.columns(3)
-        cat_new = c4.text_input("Catégorie", value="Component")
+        categories = ["Composant", "Accessoire", "Produit fini"]
+        cat_new = c4.selectbox("Catégorie", options=categories, index=0)
         rop_new = c5.number_input("ReorderPoint", min_value=0.0, step=1.0, value=0.0)
         qty_new = c6.number_input("QtyOnHand (initiale)", min_value=0.0, step=1.0, value=0.0)
         desc_new = st.text_input("Description", "")
