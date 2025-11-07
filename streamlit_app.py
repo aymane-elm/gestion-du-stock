@@ -1059,57 +1059,70 @@ with tab_importe:
 with tab_bom:
     st.header("Gestion des BOM")
     
-    # Liste des tables BOM disponibles (manuellement ou dynamiquement si besoin)
+    # Liste des tables BOM
     bom_tables = {
         "Antenne": "bom_antenne",
         "GMQ LIVE": "bom_gmq_live",
         "GMQ ONE": "bom_gmq_one",
         "Kit Batterie": "bom_kit_batterie"
     }
-    bom_label = st.selectbox("Sélectionnez la BOM à modifier :", list(bom_tables.keys()))
+    bom_label = st.selectbox("Table BOM à modifier :", list(bom_tables.keys()))
     bom_table = bom_tables[bom_label]
 
-    # Chargement de la BOM avec fetchdf (déjà définie dans le code)
+    # Charger la BOM sélectionnée
     def fetch_bom_table(table):
         sql = f"SELECT component_sku, qty_per_unit, description FROM {table} ORDER BY component_sku"
         return fetch_df(sql)
-
     df_bom = fetch_bom_table(bom_table)
     if df_bom.empty:
-        # Créer un tableau vide avec colonnes si la table est vide
         df_bom = pd.DataFrame(columns=["component_sku", "qty_per_unit", "description"])
 
-    # Edition de la table BOM
-    edited_bom = st.data_editor(
-        df_bom,
-        use_container_width=True,
-        num_rows="dynamic",
-        column_config={
-            "qty_per_unit": st.column_config.NumberColumn(
-                step=0.001, min_value=0.0,
-                format="%.3f"
-            )
-        },
-        key="bom_editor"
-    )
+    # Charger toutes les références du stock
+    stockdf = getstock()
+    stock_choices = stockdf["sku"].astype(str).tolist()
 
-    # Bouton de sauvegarde
-    if st.button("Enregistrer les modifications de la BOM"):
-        # Valider les données : colonne obligatoire et numérique
+    # Préparer les colonnes éditables, avec un selectbox pour component_sku
+    def sku_options_cell_editor(idx, row):
+        return st.selectbox(
+            f"SKU composant [{idx+1}]",
+            options=stock_choices,
+            index=stock_choices.index(str(row["component_sku"])) if row["component_sku"] in stock_choices else 0,
+            key=f"bom_selectbox_{idx}"
+        )
+
+    # Edition manuelle ligne par ligne pour profiter du selectbox
+    st.markdown("**Table BOM modifiable :**")
+    edited_rows = []
+    for idx, row in df_bom.iterrows():
+        cols = st.columns([4,2,4])
+        comp_sku = sku_options_cell_editor(idx, row)
+        qty = cols[1].number_input(f"Qté/unité [{idx+1}]", value=float(row["qty_per_unit"]) if row["qty_per_unit"] not in (None, "") else 0.0, step=0.001, min_value=0.0, key=f"bom_qty_{idx}")
+        desc = cols[2].text_input(f"Description [{idx+1}]", value=row["description"] if not pd.isnull(row["description"]) else "", key=f"bom_desc_{idx}")
+        edited_rows.append({
+            "component_sku": comp_sku,
+            "qty_per_unit": qty,
+            "description": desc
+        })
+
+    # Ajouter une ligne vide si table BOM vide
+    if df_bom.empty or st.button("Ajouter une nouvelle ligne", key="bom_addrow"):
+        edited_rows.append({
+            "component_sku": stock_choices[0],
+            "qty_per_unit": 0.0,
+            "description": ""
+        })
+
+    edited_bom = pd.DataFrame(edited_rows)
+
+    # Sauvegarde dans la base
+    if st.button("Enregistrer la BOM", key="bom_savebtn"):
         errors = []
         for idx, row in edited_bom.iterrows():
             if not row["component_sku"] or pd.isnull(row["qty_per_unit"]):
-                errors.append(f"Ligne {idx+1} : Valeur manquante")
-            else:
-                try:
-                    float(row["qty_per_unit"])
-                except Exception:
-                    errors.append(f"Ligne {idx+1} : Quantité invalide")
-        
+                errors.append(f"Ligne {idx+1} : valeur manquante")
         if errors:
-            st.error("Erreurs détectées dans la saisie :\n" + "\n".join(errors))
+            st.error("Erreurs détectées :\n" + "\n".join(errors))
         else:
-            # On vide la table avant de réécrire (alternative : upsert)
             try:
                 executesql(f"DELETE FROM {bom_table}")
                 for r in edited_bom.to_dict(orient="records"):
@@ -1121,5 +1134,4 @@ with tab_bom:
                 st.experimental_rerun()
             except Exception as e:
                 st.error(f"Erreur lors de la mise à jour : {e}")
-
 
