@@ -1078,7 +1078,7 @@ with tab_bom:
         df_bom = pd.DataFrame(columns=["component_sku", "qty_per_unit", "description"])
 
     # Charger toutes les références du stock
-    stockdf = getstock()
+    stockdf = get_stock()
     stock_choices = stockdf["sku"].astype(str).tolist()
 
     # Préparer les colonnes éditables, avec un selectbox pour component_sku
