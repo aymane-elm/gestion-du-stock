@@ -356,9 +356,9 @@ def to_csv_bytes(df: pd.DataFrame) -> bytes:
 # =========================
 
 # [REF:TABS-DEFINE]
-tab_dash, tab_moves, tab_mo, tab_stock, tab_invent, tab_clients, tab_importe = st.tabs([
+tab_dash, tab_moves, tab_mo, tab_stock, tab_invent, tab_clients, tab_importe, tab_bom = st.tabs([
     "Aperçu", "Mouvements", "Ordres de fabrication", "Stock",
-    "Inventaire", "Clients", "Importer"
+    "Inventaire", "Clients", "Importer", "BOM GMQ"
 ])
 
 
@@ -1052,5 +1052,74 @@ with tab_importe:
             st.error(f"Erreur de lecture ou d'import : {e}")
     else:
         st.info(f"Importer un fichier avec colonnes : {', '.join(expected_cols)}.")
+
+
+####### Gestion de bom
+
+with tab_bom:
+    st.header("Gestion des BOM")
+    
+    # Liste des tables BOM disponibles (manuellement ou dynamiquement si besoin)
+    bom_tables = {
+        "Antenne": "bom_antenne",
+        "GMQ LIVE": "bom_gmq_live",
+        "GMQ ONE": "bom_gmq_one",
+        "Kit Batterie": "bom_kit_batterie"
+    }
+    bom_label = st.selectbox("Sélectionnez la BOM à modifier :", list(bom_tables.keys()))
+    bom_table = bom_tables[bom_label]
+
+    # Chargement de la BOM avec fetchdf (déjà définie dans le code)
+    def fetch_bom_table(table):
+        sql = f"SELECT component_sku, qty_per_unit, description FROM {table} ORDER BY component_sku"
+        return fetch_df(sql)
+
+    df_bom = fetch_bom_table(bom_table)
+    if df_bom.empty:
+        # Créer un tableau vide avec colonnes si la table est vide
+        df_bom = pd.DataFrame(columns=["component_sku", "qty_per_unit", "description"])
+
+    # Edition de la table BOM
+    edited_bom = st.data_editor(
+        df_bom,
+        use_container_width=True,
+        num_rows="dynamic",
+        column_config={
+            "qty_per_unit": st.column_config.NumberColumn(
+                step=0.001, min_value=0.0,
+                format="%.3f"
+            )
+        },
+        key="bom_editor"
+    )
+
+    # Bouton de sauvegarde
+    if st.button("Enregistrer les modifications de la BOM"):
+        # Valider les données : colonne obligatoire et numérique
+        errors = []
+        for idx, row in edited_bom.iterrows():
+            if not row["component_sku"] or pd.isnull(row["qty_per_unit"]):
+                errors.append(f"Ligne {idx+1} : Valeur manquante")
+            else:
+                try:
+                    float(row["qty_per_unit"])
+                except Exception:
+                    errors.append(f"Ligne {idx+1} : Quantité invalide")
+        
+        if errors:
+            st.error("Erreurs détectées dans la saisie :\n" + "\n".join(errors))
+        else:
+            # On vide la table avant de réécrire (alternative : upsert)
+            try:
+                executesql(f"DELETE FROM {bom_table}")
+                for r in edited_bom.to_dict(orient="records"):
+                    executesql(
+                        f"INSERT INTO {bom_table} (component_sku, qty_per_unit, description) VALUES (:sku, :qty, :desc)",
+                        {"sku": r["component_sku"], "qty": float(r["qty_per_unit"]), "desc": r.get("description", "")}
+                    )
+                st.success("BOM mise à jour avec succès !")
+                st.experimental_rerun()
+            except Exception as e:
+                st.error(f"Erreur lors de la mise à jour : {e}")
 
 
