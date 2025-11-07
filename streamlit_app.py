@@ -1055,7 +1055,6 @@ with tab_importe:
 
 
 ####### Gestion de bom
-
 with tab_bom:
     st.header("Gestion des BOM")
     bom_tables = {
@@ -1075,66 +1074,68 @@ with tab_bom:
     if df_bom.empty:
         df_bom = pd.DataFrame(columns=["component_sku", "qty_per_unit", "description"])
 
-    # Liste des composants du stock
     stockdf = get_stock()
     stock_choices = stockdf["sku"].astype(str).tolist()
 
     st.markdown("**Édition manuelle de la BOM :**")
 
-    edited_rows = []
-    for idx, row in df_bom.iterrows():
-        cols = st.columns([4,2,4])
-        comp_sku = cols[0].selectbox(
-            "Composant [{}]".format(idx+1),
-            options=stock_choices,
-            index=stock_choices.index(str(row["component_sku"])) if row["component_sku"] in stock_choices else 0,
-            key=f"bom_selectbox_{idx}"
-        )
-        qty = cols[1].number_input(
-            f"Qté/unité [{idx+1}]",
-            value=float(row["qty_per_unit"]) if row["qty_per_unit"] not in (None, "") else 0.0,
-            step=0.001,
-            min_value=0.0,
-            key=f"bom_qty_{idx}"
-        )
-        desc = cols[2].text_input(
-            f"Description [{idx+1}]",
-            value=row["description"] if not pd.isnull(row["description"]) else "",
-            key=f"bom_desc_{idx}"
-        )
-        edited_rows.append({
-            "component_sku": comp_sku,
-            "qty_per_unit": qty,
-            "description": desc
-        })
+    # Utiliser un formulaire pour éviter le rerun à chaque bouton
+    with st.form("edition_bom_formulaire"):
+        edited_rows = []
+        for idx, row in df_bom.iterrows():
+            cols = st.columns([4,2,4])
+            comp_sku = cols[0].selectbox(
+                "Composant [{}]".format(idx+1),
+                options=stock_choices,
+                index=stock_choices.index(str(row["component_sku"])) if row["component_sku"] in stock_choices else 0,
+                key=f"bom_selectbox_{idx}"
+            )
+            qty = cols[1].number_input(
+                f"Qté/unité [{idx+1}]",
+                value=float(row["qty_per_unit"]) if row["qty_per_unit"] not in (None, "") else 0.0,
+                step=0.001,
+                min_value=0.0,
+                key=f"bom_qty_{idx}"
+            )
+            desc = cols[2].text_input(
+                f"Description [{idx+1}]",
+                value=row["description"] if not pd.isnull(row["description"]) else "",
+                key=f"bom_desc_{idx}"
+            )
+            edited_rows.append({
+                "component_sku": comp_sku,
+                "qty_per_unit": qty,
+                "description": desc
+            })
 
-    # Ajouter une ligne à la demande
-    if st.button("Ajouter une nouvelle ligne", key="bom_addrow"):
-        edited_rows.append({
-            "component_sku": stock_choices[0],
-            "qty_per_unit": 0.0,
-            "description": ""
-        })
+        # Ligne pour l'ajout manuel si besoin
+        add_row = st.checkbox("Ajouter une nouvelle ligne vide")
+        if add_row:
+            edited_rows.append({
+                "component_sku": stock_choices[0],
+                "qty_per_unit": 0.0,
+                "description": ""
+            })
+        edited_bom = pd.DataFrame(edited_rows)
 
-    edited_bom = pd.DataFrame(edited_rows)
-
-    if st.button("Enregistrer la BOM", key="bom_savebtn"):
-        errors = []
-        for idx, row in edited_bom.iterrows():
-            if not row["component_sku"] or pd.isnull(row["qty_per_unit"]):
-                errors.append(f"Ligne {idx+1} : valeur manquante")
-        if errors:
-            st.error("Erreurs détectées :\n" + "\n".join(errors))
-        else:
-            try:
-                executesql(f"DELETE FROM {bom_table}")
-                for r in edited_bom.to_dict(orient="records"):
-                    executesql(
-                        f"INSERT INTO {bom_table} (component_sku, qty_per_unit, description) VALUES (:sku, :qty, :desc)",
-                        {"sku": r["component_sku"], "qty": float(r["qty_per_unit"]), "desc": r.get("description", "")}
-                    )
-                st.success("BOM mise à jour avec succès !")
-                st.experimental_rerun()
-            except Exception as e:
-                st.error(f"Erreur lors de la mise à jour : {e}")
+        submitted = st.form_submit_button("Enregistrer la BOM")
+        if submitted:
+            errors = []
+            for idx, row in edited_bom.iterrows():
+                if not row["component_sku"] or pd.isnull(row["qty_per_unit"]):
+                    errors.append(f"Ligne {idx+1} : valeur manquante")
+            if errors:
+                st.error("Erreurs détectées :\n" + "\n".join(errors))
+            else:
+                try:
+                    executesql(f"DELETE FROM {bom_table}")
+                    for r in edited_bom.to_dict(orient="records"):
+                        executesql(
+                            f"INSERT INTO {bom_table} (component_sku, qty_per_unit, description) VALUES (:sku, :qty, :desc)",
+                            {"sku": r["component_sku"], "qty": float(r["qty_per_unit"]), "desc": r.get("description", "")}
+                        )
+                    st.success("BOM mise à jour avec succès !")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erreur lors de la mise à jour : {e}")
 
