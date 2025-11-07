@@ -1058,8 +1058,6 @@ with tab_importe:
 
 with tab_bom:
     st.header("Gestion des BOM")
-    
-    # Liste des tables BOM
     bom_tables = {
         "Antenne": "bom_antenne",
         "GMQ LIVE": "bom_gmq_live",
@@ -1077,35 +1075,41 @@ with tab_bom:
     if df_bom.empty:
         df_bom = pd.DataFrame(columns=["component_sku", "qty_per_unit", "description"])
 
-    # Charger toutes les références du stock
+    # Liste des composants du stock
     stockdf = get_stock()
     stock_choices = stockdf["sku"].astype(str).tolist()
 
-    # Préparer les colonnes éditables, avec un selectbox pour component_sku
-    def sku_options_cell_editor(idx, row):
-        return st.selectbox(
-            f"SKU composant [{idx+1}]",
+    st.markdown("**Édition manuelle de la BOM :**")
+
+    edited_rows = []
+    for idx, row in df_bom.iterrows():
+        cols = st.columns([4,2,4])
+        comp_sku = cols[0].selectbox(
+            "Composant [{}]".format(idx+1),
             options=stock_choices,
             index=stock_choices.index(str(row["component_sku"])) if row["component_sku"] in stock_choices else 0,
             key=f"bom_selectbox_{idx}"
         )
-
-    # Edition manuelle ligne par ligne pour profiter du selectbox
-    st.markdown("**Table BOM modifiable :**")
-    edited_rows = []
-    for idx, row in df_bom.iterrows():
-        cols = st.columns([4,2,4])
-        comp_sku = sku_options_cell_editor(idx, row)
-        qty = cols[1].number_input(f"Qté/unité [{idx+1}]", value=float(row["qty_per_unit"]) if row["qty_per_unit"] not in (None, "") else 0.0, step=0.001, min_value=0.0, key=f"bom_qty_{idx}")
-        desc = cols[2].text_input(f"Description [{idx+1}]", value=row["description"] if not pd.isnull(row["description"]) else "", key=f"bom_desc_{idx}")
+        qty = cols[1].number_input(
+            f"Qté/unité [{idx+1}]",
+            value=float(row["qty_per_unit"]) if row["qty_per_unit"] not in (None, "") else 0.0,
+            step=0.001,
+            min_value=0.0,
+            key=f"bom_qty_{idx}"
+        )
+        desc = cols[2].text_input(
+            f"Description [{idx+1}]",
+            value=row["description"] if not pd.isnull(row["description"]) else "",
+            key=f"bom_desc_{idx}"
+        )
         edited_rows.append({
             "component_sku": comp_sku,
             "qty_per_unit": qty,
             "description": desc
         })
 
-    # Ajouter une ligne vide si table BOM vide
-    if df_bom.empty or st.button("Ajouter une nouvelle ligne", key="bom_addrow"):
+    # Ajouter une ligne à la demande
+    if st.button("Ajouter une nouvelle ligne", key="bom_addrow"):
         edited_rows.append({
             "component_sku": stock_choices[0],
             "qty_per_unit": 0.0,
@@ -1114,7 +1118,6 @@ with tab_bom:
 
     edited_bom = pd.DataFrame(edited_rows)
 
-    # Sauvegarde dans la base
     if st.button("Enregistrer la BOM", key="bom_savebtn"):
         errors = []
         for idx, row in edited_bom.iterrows():
