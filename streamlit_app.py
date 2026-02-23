@@ -1195,6 +1195,27 @@ with tab_bom:
 
     if save:
         allowed = set(stock_skus)  # stock actuel
+        # Mapping SKU -> libellé (choisis ta règle)
+        stock_map = (
+            stock_df.assign(sku=lambda d: d["sku"].astype(str).str.strip())
+                    .assign(_label=lambda d: d["description"].fillna("").astype(str).str.strip()
+                                       .where(lambda s: s.ne(""), d["name"].fillna("").astype(str).str.strip()))
+                    .set_index("sku")["_label"]
+                    .to_dict()
+        )
+        
+        def autofill_description(df: pd.DataFrame) -> pd.DataFrame:
+            out = df.copy()
+            out["component_sku"] = out["component_sku"].fillna("").astype(str).str.strip()
+            out["description"] = out.get("description", "").fillna("").astype(str)
+        
+            # Remplir uniquement si vide (ne pas écraser une description saisie à la main)
+            mask_empty = out["description"].str.strip().eq("")
+            out.loc[mask_empty, "description"] = out.loc[mask_empty, "component_sku"].map(stock_map).fillna("")
+            return out
+        
+        edited = autofill_description(edited)
+
         cleaned, errors, warnings = _normalize_and_validate(edited, allowed, strict=strict_sku)
 
         if warnings:
