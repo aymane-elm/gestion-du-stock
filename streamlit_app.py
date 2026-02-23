@@ -1055,87 +1055,169 @@ with tab_importe:
 
 
 ####### Gestion de bom
+# =========================
+# ONGLET – GESTION BOM
+# =========================
 with tab_bom:
     st.header("Gestion des BOM")
-    bom_tables = {
+
+    BOM_TABLES = {
         "Antenne": "bom_antenne",
         "GMQ LIVE": "bom_gmq_live",
         "GMQ ONE": "bom_gmq_one",
-        "Kit Batterie": "bom_kit_batterie"
+        "Kit Batterie": "bom_kit_batterie",
     }
-    bom_label = st.selectbox("Table BOM à modifier :", list(bom_tables.keys()))
-    bom_table = bom_tables[bom_label]
 
-    # Charger la BOM sélectionnée
-    def fetch_bom_table(table):
-        sql = f"SELECT component_sku, qty_per_unit, description FROM {table} ORDER BY component_sku"
-        return fetch_df(sql)
-    df_bom = fetch_bom_table(bom_table)
-    if df_bom.empty:
-        df_bom = pd.DataFrame(columns=["component_sku", "qty_per_unit", "description"])
+    bom_label = st.selectbox("Table BOM à modifier :", list(BOM_TABLES.keys()), key="bom_table_pick")
+    bom_table = BOM_TABLES[bom_label]
 
-    stockdf = get_stock()
-    stock_choices = stockdf["sku"].astype(str).tolist()
+    def load_bom(table_name: str) -> pd.DataFrame:
+        sql = f"""
+            SELECT component_sku, qty_per_unit, description
+            FROM {table_name}
+            ORDER BY component_sku
+        """
+        df = fetch_df(sql)
+        if df.empty:
+            df = pd.DataFrame(columns=["component_sku", "qty_per_unit", "description"])
+        return df
 
-    st.markdown("**Édition manuelle de la BOM :**")
+    stock_df = get_stock()
+    stock_skus = stock_df["sku"].astype(str).tolist()
 
-    # Utiliser un formulaire pour éviter le rerun à chaque bouton
-    with st.form("edition_bom_formulaire"):
-        edited_rows = []
-        for idx, row in df_bom.iterrows():
-            cols = st.columns([4,2,4])
-            comp_sku = cols[0].selectbox(
-                "Composant [{}]".format(idx+1),
-                options=stock_choices,
-                index=stock_choices.index(str(row["component_sku"])) if row["component_sku"] in stock_choices else 0,
-                key=f"bom_selectbox_{idx}"
-            )
-            qty = cols[1].number_input(
-                f"Qté/unité [{idx+1}]",
-                value=float(row["qty_per_unit"]) if row["qty_per_unit"] not in (None, "") else 0.0,
-                step=0.001,
-                min_value=0.0,
-                key=f"bom_qty_{idx}"
-            )
-            desc = cols[2].text_input(
-                f"Description [{idx+1}]",
-                value=row["description"] if not pd.isnull(row["description"]) else "",
-                key=f"bom_desc_{idx}"
-            )
-            edited_rows.append({
-                "component_sku": comp_sku,
-                "qty_per_unit": qty,
-                "description": desc
-            })
+    df_bom = load_bom(bom_table)
+    bom_existing_skus = df_bom["component_sku"].dropna().astype(str).tolist() if "component_sku" in df_bom.columns else []
 
-        # Ligne pour l'ajout manuel si besoin
-        add_row = st.checkbox("Ajouter une nouvelle ligne vide")
-        if add_row:
-            edited_rows.append({
-                "component_sku": stock_choices[0],
-                "qty_per_unit": 0.0,
-                "description": ""
-            })
-        edited_bom = pd.DataFrame(edited_rows)
+    # Options = stock + SKU déjà présents en BOM (évite de casser l’affichage si un SKU n’est plus au stock)
+    sku_options = sorted(set(stock_skus) | set(bom_existing_skus))
 
-        submitted = st.form_submit_button("Enregistrer la BOM")
-        if submitted:
-            errors = []
-            for idx, row in edited_bom.iterrows():
-                if not row["component_sku"] or pd.isnull(row["qty_per_unit"]):
-                    errors.append(f"Ligne {idx+1} : valeur manquante")
-            if errors:
-                st.error("Erreurs détectées :\n" + "\n".join(errors))
+    if not sku_options and df_bom.empty:
+        st.error("Impossible d’éditer : stock vide et BOM vide (aucun SKU disponible).")
+        st.stop()
+
+    st.markdown("**Édition de la BOM :**")
+
+    # Petit export utile
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        st.download_button(
+            "⬇️ Export CSV",
+            data=df_bom.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"bom_{bom_table}.csv",
+            mime="text/csv",
+            key="bom_export_csv",
+        )
+    with c2:
+        strict_sku = st.checkbox(
+            "Bloquer les SKU hors stock",
+            value=True,
+            help="Si décoché, tu peux garder des SKU qui ne sont plus dans la table stock.",
+            key="bom_strict_sku",
+        )
+
+    def _normalize_and_validate(df: pd.DataFrame, allowed_skus: set[str], strict: bool) -> tuple[pd.DataFrame, list[str], list[str]]:
+        errors: list[str] = []
+        warnings: list[str] = []
+
+        if df is None or df.empty:
+            # Autoriser BOM vide
+            out = pd.DataFrame(columns=["component_sku", "qty_per_unit", "description"])
+            return out, errors, warnings
+
+        out = df.copy()
+
+        # Colonnes attendues
+        for col in ["component_sku", "qty_per_unit", "description"]:
+            if col not in out.columns:
+                out[col] = "" if col != "qty_per_unit" else 0.0
+
+        out["component_sku"] = out["component_sku"].fillna("").astype(str).str.strip()
+        out["description"] = out["description"].fillna("").astype(str)
+        out["qty_per_unit"] = pd.to_numeric(out["qty_per_unit"], errors="coerce")
+
+        # Supprime les lignes totalement vides (cas fréquent avec num_rows="dynamic")
+        is_empty_row = (out["component_sku"] == "") & (out["qty_per_unit"].isna()) & (out["description"] == "")
+        out = out.loc[~is_empty_row].copy()
+
+        # Validation
+        if (out["component_sku"] == "").any():
+            errors.append("Au moins une ligne a un component_sku vide.")
+        if out["qty_per_unit"].isna().any():
+            errors.append("Au moins une ligne a qty_per_unit vide ou non numérique.")
+        if (out["qty_per_unit"].fillna(0) < 0).any():
+            errors.append("qty_per_unit ne peut pas être négatif.")
+
+        # Doublons SKU
+        dups = out["component_sku"][out["component_sku"].duplicated(keep=False)].unique().tolist()
+        if dups:
+            errors.append("SKU en doublon dans la BOM : " + ", ".join(dups))
+
+        # SKU hors stock (si strict)
+        unknown = sorted(set(out["component_sku"]) - allowed_skus)
+        if unknown:
+            if strict:
+                errors.append("SKU inconnus (pas dans le stock) : " + ", ".join(unknown))
             else:
-                try:
-                    executesql(f"DELETE FROM {bom_table}")
-                    for r in edited_bom.to_dict(orient="records"):
-                        executesql(
-                            f"INSERT INTO {bom_table} (component_sku, qty_per_unit, description) VALUES (:sku, :qty, :desc)",
-                            {"sku": r["component_sku"], "qty": float(r["qty_per_unit"]), "desc": r.get("description", "")}
+                warnings.append("SKU hors stock conservés : " + ", ".join(unknown))
+
+        # Type final
+        out["qty_per_unit"] = out["qty_per_unit"].fillna(0.0).astype(float)
+
+        # Tri propre
+        out = out.sort_values(["component_sku"], ascending=True).reset_index(drop=True)
+        return out[["component_sku", "qty_per_unit", "description"]], errors, warnings
+
+    with st.form("bom_editor_form"):
+        if sku_options:
+            col_cfg = {
+                "component_sku": st.column_config.SelectboxColumn("Composant (SKU)", options=sku_options),
+                "qty_per_unit": st.column_config.NumberColumn("Qté / unité", min_value=0.0, step=0.001),
+                "description": st.column_config.TextColumn("Description"),
+            }
+        else:
+            # Fallback (stock vide mais BOM pas vide) : pas de selectbox possible
+            col_cfg = {
+                "component_sku": st.column_config.TextColumn("Composant (SKU)"),
+                "qty_per_unit": st.column_config.NumberColumn("Qté / unité", min_value=0.0, step=0.001),
+                "description": st.column_config.TextColumn("Description"),
+            }
+
+        edited = st.data_editor(
+            df_bom,
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            column_config=col_cfg,
+            key=f"bom_editor_{bom_table}",
+        )
+
+        save = st.form_submit_button("💾 Enregistrer la BOM")
+
+    if save:
+        allowed = set(stock_skus)  # stock actuel
+        cleaned, errors, warnings = _normalize_and_validate(edited, allowed, strict=strict_sku)
+
+        if warnings:
+            st.warning("\n".join([f"- {w}" for w in warnings]))
+
+        if errors:
+            st.error("Erreurs détectées :\n" + "\n".join([f"- {e}" for e in errors]))
+        else:
+            try:
+                rows = cleaned.to_dict(orient="records")
+                with engine.begin() as conn:
+                    conn.execute(text(f"DELETE FROM {bom_table}"))
+                    if rows:
+                        conn.execute(
+                            text(f"""
+                                INSERT INTO {bom_table} (component_sku, qty_per_unit, description)
+                                VALUES (:component_sku, :qty_per_unit, :description)
+                            """),
+                            rows,  # executemany
                         )
-                    st.success("BOM mise à jour avec succès !")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Erreur lors de la mise à jour : {e}")
+                st.success("BOM mise à jour avec succès !")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erreur lors de la mise à jour : {e}")
+
 
