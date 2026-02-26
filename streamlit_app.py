@@ -1083,10 +1083,14 @@ with tab_bom:
         return df
 
     stock_df = get_stock()
-    stock_skus = stock_df["sku"].astype(str).tolist()
+    stock_skus = stock_df["sku"].astype(str).str.strip().tolist()
 
     df_bom = load_bom(bom_table)
-    bom_existing_skus = df_bom["component_sku"].dropna().astype(str).tolist() if "component_sku" in df_bom.columns else []
+    bom_existing_skus = (
+        df_bom["component_sku"].dropna().astype(str).str.strip().tolist()
+        if "component_sku" in df_bom.columns
+        else []
+    )
 
     # Options = stock + SKU déjà présents en BOM (évite de casser l’affichage si un SKU n’est plus au stock)
     sku_options = sorted(set(stock_skus) | set(bom_existing_skus))
@@ -1097,30 +1101,16 @@ with tab_bom:
 
     st.markdown("**Édition de la BOM :**")
 
-    # Petit export utile
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        st.download_button(
-            "⬇️ Export CSV",
-            data=df_bom.to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"bom_{bom_table}.csv",
-            mime="text/csv",
-            key="bom_export_csv",
-        )
-    with c2:
-        strict_sku = st.checkbox(
-            "Bloquer les SKU hors stock",
-            value=True,
-            help="Si décoché, tu peux garder des SKU qui ne sont plus dans la table stock.",
-            key="bom_strict_sku",
-        )
-
-    def _normalize_and_validate(df: pd.DataFrame, allowed_skus: set[str], strict: bool) -> tuple[pd.DataFrame, list[str], list[str]]:
+    # --- validation / normalisation ---
+    def _normalize_and_validate(
+        df: pd.DataFrame,
+        allowed_skus: set[str],
+        strict: bool,
+    ) -> tuple[pd.DataFrame, list[str], list[str]]:
         errors: list[str] = []
         warnings: list[str] = []
 
         if df is None or df.empty:
-            # Autoriser BOM vide
             out = pd.DataFrame(columns=["component_sku", "qty_per_unit", "description"])
             return out, errors, warnings
 
@@ -1167,6 +1157,131 @@ with tab_bom:
         out = out.sort_values(["component_sku"], ascending=True).reset_index(drop=True)
         return out[["component_sku", "qty_per_unit", "description"]], errors, warnings
 
+    # --- UI export/import + strict SKU ---
+    c1, c2 = st.columns([1, 2])
+
+    with c2:
+        strict_sku = st.checkbox(
+            "Bloquer les SKU hors stock",
+            value=True,
+            help="Si décoché, tu peux garder des SKU qui ne sont plus dans la table stock.",
+            key="bom_strict_sku",
+        )
+
+    allowed = set(stock_skus)
+
+    stock_map = (
+        stock_df.assign(sku=lambda d: d["sku"].astype(str).str.strip())
+        .assign(
+            _label=lambda d: d["description"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .where(lambda s: s.ne(""), d["name"].fillna("").astype(str).str.strip())
+        )
+        .set_index("sku")["_label"]
+        .to_dict()
+    )
+
+    def autofill_description(df: pd.DataFrame) -> pd.DataFrame:
+        out = df.copy()
+        out["component_sku"] = out["component_sku"].fillna("").astype(str).str.strip()
+        out["description"] = out.get("description", "").fillna("").astype(str)
+
+        # Remplir uniquement si vide (ne pas écraser une description saisie à la main)
+        mask_empty = out["description"].str.strip().eq("")
+        out.loc[mask_empty, "description"] = out.loc[mask_empty, "component_sku"].map(stock_map).fillna("")
+        return out
+
+    with c1:
+        st.download_button(
+            "⬇️ Export CSV",
+            data=df_bom.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"bom_{bom_table}.csv",
+            mime="text/csv",
+            key="bom_export_csv",
+        )
+
+        st.markdown("**Importer un CSV (remplace la BOM)**")
+        bom_file = st.file_uploader(
+            "Choisir un fichier CSV BOM",
+            type=["csv"],
+            key=f"bom_import_csv_{bom_table}",
+            help="Colonnes requises : component_sku (ou sku) et qty_per_unit (ou qty). description est optionnelle.",
+        )
+
+        def _read_csv_flexible(uploaded_file) -> pd.DataFrame:
+            import io
+            raw = uploaded_file.getvalue()  # évite les soucis de buffer vidé
+            for sep in [",", ";", "\t"]:
+                try:
+                    return pd.read_csv(io.BytesIO(raw), sep=sep)
+                except Exception:
+                    continue
+            return pd.read_csv(io.BytesIO(raw))
+
+        if bom_file is not None:
+            try:
+                raw_df = _read_csv_flexible(bom_file)
+
+                # Normalise / tolère quelques variantes
+                colmap = {c.strip().lower(): c for c in raw_df.columns}
+
+                def _pick(*candidates: str) -> str | None:
+                    for cand in candidates:
+                        if cand in colmap:
+                            return colmap[cand]
+                    return None
+
+                c_sku = _pick("component_sku", "componentsku", "component sku", "sku")
+                c_qty = _pick("qty_per_unit", "qtyperunit", "qty per unit", "qty", "quantity")
+                c_desc = _pick("description", "desc")
+
+                if c_sku is None or c_qty is None:
+                    st.error("CSV invalide : colonnes requises = component_sku (ou sku) et qty_per_unit (ou qty).")
+                else:
+                    imported = pd.DataFrame(
+                        {
+                            "component_sku": raw_df[c_sku],
+                            "qty_per_unit": raw_df[c_qty],
+                            "description": raw_df[c_desc] if c_desc is not None else "",
+                        }
+                    )
+
+                    imported = autofill_description(imported)
+                    cleaned_imp, errors_imp, warnings_imp = _normalize_and_validate(imported, allowed, strict=strict_sku)
+
+                    if warnings_imp:
+                        st.warning("\n".join([f"- {w}" for w in warnings_imp]))
+                    if errors_imp:
+                        st.error("Erreurs détectées dans le CSV :\n" + "\n".join([f"- {e}" for e in errors_imp]))
+                    else:
+                        st.dataframe(cleaned_imp, use_container_width=True)
+
+                        if st.button("📥 Importer et remplacer la BOM", key=f"bom_import_apply_{bom_table}"):
+                            rows = cleaned_imp.to_dict(orient="records")
+                            try:
+                                with engine.begin() as conn:
+                                    conn.execute(text(f"DELETE FROM {bom_table}"))
+                                    if rows:
+                                        conn.execute(
+                                            text(
+                                                f"""
+                                                INSERT INTO {bom_table} (component_sku, qty_per_unit, description)
+                                                VALUES (:component_sku, :qty_per_unit, :description)
+                                                """
+                                            ),
+                                            rows,  # executemany
+                                        )
+                                st.success("Import CSV effectué : BOM remplacée avec succès !")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Erreur lors de l'import DB : {e}")
+
+            except Exception as e:
+                st.error(f"Erreur lors de la lecture/import du CSV : {e}")
+
+    # --- éditeur manuel + save ---
     with st.form("bom_editor_form"):
         if sku_options:
             col_cfg = {
@@ -1175,7 +1290,6 @@ with tab_bom:
                 "description": st.column_config.TextColumn("Description"),
             }
         else:
-            # Fallback (stock vide mais BOM pas vide) : pas de selectbox possible
             col_cfg = {
                 "component_sku": st.column_config.TextColumn("Composant (SKU)"),
                 "qty_per_unit": st.column_config.NumberColumn("Qté / unité", min_value=0.0, step=0.001),
@@ -1194,28 +1308,7 @@ with tab_bom:
         save = st.form_submit_button("💾 Enregistrer la BOM")
 
     if save:
-        allowed = set(stock_skus)  # stock actuel
-        # Mapping SKU -> libellé (choisis ta règle)
-        stock_map = (
-            stock_df.assign(sku=lambda d: d["sku"].astype(str).str.strip())
-                    .assign(_label=lambda d: d["description"].fillna("").astype(str).str.strip()
-                                       .where(lambda s: s.ne(""), d["name"].fillna("").astype(str).str.strip()))
-                    .set_index("sku")["_label"]
-                    .to_dict()
-        )
-        
-        def autofill_description(df: pd.DataFrame) -> pd.DataFrame:
-            out = df.copy()
-            out["component_sku"] = out["component_sku"].fillna("").astype(str).str.strip()
-            out["description"] = out.get("description", "").fillna("").astype(str)
-        
-            # Remplir uniquement si vide (ne pas écraser une description saisie à la main)
-            mask_empty = out["description"].str.strip().eq("")
-            out.loc[mask_empty, "description"] = out.loc[mask_empty, "component_sku"].map(stock_map).fillna("")
-            return out
-        
         edited = autofill_description(edited)
-
         cleaned, errors, warnings = _normalize_and_validate(edited, allowed, strict=strict_sku)
 
         if warnings:
@@ -1230,15 +1323,18 @@ with tab_bom:
                     conn.execute(text(f"DELETE FROM {bom_table}"))
                     if rows:
                         conn.execute(
-                            text(f"""
+                            text(
+                                f"""
                                 INSERT INTO {bom_table} (component_sku, qty_per_unit, description)
                                 VALUES (:component_sku, :qty_per_unit, :description)
-                            """),
+                                """
+                            ),
                             rows,  # executemany
                         )
                 st.success("BOM mise à jour avec succès !")
                 st.rerun()
             except Exception as e:
                 st.error(f"Erreur lors de la mise à jour : {e}")
+
 
 
