@@ -774,12 +774,17 @@ with tab_invent:
     required_cols = ["sku", "qty_on_hand"]
 
     st.markdown("**Importer un fichier Excel ou CSV**")
-    st.caption("Le fichier doit contenir au minimum les colonnes obligatoires : `sku` et `qty_on_hand`. Les autres colonnes seront utilisées si présentes.")
-    inv_file = st.file_uploader("Choisir un fichier Excel ou CSV", type=["csv", "xlsx"], key="inv_file_uploader")
+    st.caption(
+        "Le fichier doit contenir au minimum les colonnes obligatoires : `sku` et `qty_on_hand`. "
+        "Les autres colonnes seront utilisées si présentes."
+    )
+    inv_file = st.file_uploader(
+        "Choisir un fichier Excel ou CSV", type=["csv", "xlsx"], key="inv_file_uploader"
+    )
 
     def _read_excel_or_csv(file) -> pd.DataFrame:
         import io
-        if file.name.endswith('.xlsx'):
+        if file.name.endswith(".xlsx"):
             return pd.read_excel(file)
         else:
             raw = file.read()
@@ -794,20 +799,41 @@ with tab_invent:
         cols_std = [c.strip().lower() for c in df.columns]
         for c in required_cols:
             if c not in cols_std:
-                st.error(f"Colonne obligatoire manquante : '{c}'")
+                st.error(f"Colonne obligatoire manquante : '{c}'")
                 return False
         return True
+
+    def _drop_empty_sku_lines(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Supprime les lignes où le SKU est vide/NaN/espaces, renvoie (df_nettoye, df_supprime)."""
+        out = df.copy()
+        out["sku"] = out["sku"].astype("string").str.strip()
+        invalid = out["sku"].isna() | (out["sku"] == "")
+        removed = out[invalid].copy()
+        out = out[~invalid].copy()
+        return out, removed
 
     edited = None
     if inv_file is not None:
         try:
             raw = _read_excel_or_csv(inv_file)
+
+            # Normalisation des noms de colonnes en minuscules (sku, qty_on_hand, ...)
             lower_cols = {c.lower().strip(): c for c in raw.columns}
             df = raw.rename(columns={orig: low for low, orig in lower_cols.items()})
+
             if _validate_inventory_cols(df):
                 st.success(f"Fichier importé : {len(df)} lignes.")
                 st.dataframe(df, use_container_width=True)
+
                 edited = df.copy()
+
+                # Condition demandée : si le SKU est vide, on supprime la ligne en entier
+                edited, removed_sku = _drop_empty_sku_lines(edited)
+                if not removed_sku.empty:
+                    st.warning(
+                        f"{len(removed_sku)} ligne(s) supprimée(s) : SKU vide (ligne retirée du traitement)."
+                    )
+                    st.dataframe(removed_sku, use_container_width=True)
             else:
                 edited = None
         except Exception as e:
@@ -817,25 +843,34 @@ with tab_invent:
         st.info("Importe un fichier Excel ou CSV, structure minimale : 'sku' et 'qty_on_hand'.")
 
     if edited is not None and not edited.empty:
-        stock_skus = set(stock_df["sku"].astype(str))
-        edited["sku"] = edited["sku"].astype(str)
+        # Normalise les SKU du stock
+        stock_df = stock_df.copy()
+        stock_df["sku"] = stock_df["sku"].astype("string").str.strip()
+        stock_skus = set(stock_df["sku"].dropna())
+
+        # SKU importé déjà nettoyé, mais on re-sécurise au cas où
+        edited["sku"] = edited["sku"].astype("string").str.strip()
 
         # Pour les nouveaux composants, on prend les infos du fichier si dispo, sinon valeur par défaut
         def safe_val(row, k, default):
-            return row[k] if k in row and pd.notnull(row[k]) else default
+            return row[k] if (k in row and pd.notnull(row[k])) else default
 
-        new_lines = edited[~edited["sku"].isin(stock_skus)]
-        for _, r in new_lines.iterrows():
-            add_stock_item(
-                r["sku"],
-                r["name"] if "name" in r else r["sku"],
-                r["unit"] if "unit" in r else "pcs",
-                r["category"] if "category" in r else "Inventaire",
-                float(r["reorder_point"]) if "reorder_point" in r and pd.notnull(r["reorder_point"]) else 0.,
-                float(r["qty_on_hand"]),
-                r["description"] if "description" in r else ""
-            )
-        if len(new_lines) > 0:
+        new_lines = edited[~edited["sku"].isin(stock_skus)].copy()
+        if not new_lines.empty:
+            # Sécurise qty_on_hand
+            new_lines["qty_on_hand"] = pd.to_numeric(new_lines["qty_on_hand"], errors="coerce").fillna(0.0)
+
+            for _, r in new_lines.iterrows():
+                add_stock_item(
+                    str(r["sku"]),
+                    safe_val(r, "name", str(r["sku"])),
+                    safe_val(r, "unit", "pcs"),
+                    safe_val(r, "category", "Inventaire"),
+                    float(safe_val(r, "reorder_point", 0.0)) if pd.notnull(safe_val(r, "reorder_point", 0.0)) else 0.0,
+                    float(r["qty_on_hand"]),
+                    safe_val(r, "description", ""),
+                )
+
             st.success(f"{len(new_lines)} nouveaux produits ajoutés au stock.")
 
         c1, c2 = st.columns(2)
@@ -843,9 +878,15 @@ with tab_invent:
         valider = c2.button("Valider ajustements", key="inv_valid")
 
         def compute_diffs(ed: pd.DataFrame) -> pd.DataFrame:
+            # Re-applique la règle : SKU vide => ligne supprimée
+            ed2, _ = _drop_empty_sku_lines(ed)
+
             sm = stock_df[["sku", "qty_on_hand"]].rename(columns={"sku": "SKU", "qty_on_hand": "Systeme"})
-            ed2 = ed.copy()
-            ed2["sku"] = ed2["sku"].astype(str)
+            sm["SKU"] = sm["SKU"].astype("string").str.strip()
+
+            ed2 = ed2.copy()
+            ed2["sku"] = ed2["sku"].astype("string").str.strip()
+
             merged = ed2.merge(sm, left_on="sku", right_on="SKU", how="left").fillna({"Systeme": 0.0})
             merged["qty_on_hand"] = pd.to_numeric(merged["qty_on_hand"], errors="coerce").fillna(0.0)
             merged["Ecart"] = merged["qty_on_hand"] - merged["Systeme"]
@@ -864,18 +905,18 @@ with tab_invent:
             else:
                 try:
                     for r in diffs.itertuples(index=False):
-                        sku = r.sku
+                        sku = str(r.sku)
                         ecart = float(r.Ecart)
                         if ecart == 0:
                             continue
                         move_type = "IN" if ecart > 0 else "OUT"
                         qty = abs(ecart)
-                        record_movement_and_update(sku, move_type, qty, ref_inv, "INVENTAIRE", responsable_inv)
+                        record_movement_and_update(
+                            sku, move_type, qty, ref_inv, "INVENTAIRE", responsable_inv
+                        )
                     st.success("Ajustements d'inventaire enregistrés")
                 except Exception as e:
                     st.error(str(e))
-
-
 
 
 # ---- CLIENTS
