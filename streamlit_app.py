@@ -124,37 +124,43 @@ def delete_clients(ids: List[str]) -> int:
 # =========================
 
 def get_stock() -> pd.DataFrame:
-    df = fetch_df(
-        """
-        SELECT sku, name, unit, category,
-               COALESCE(reorder_point,0) AS reorder_point,
-               COALESCE(qty_on_hand,0)   AS qty_on_hand,
-               description
+    df = fetchdf("""
+        SELECT
+          sku, name, unit, category,
+          COALESCE(reorderpoint,0) AS reorderpoint,
+          COALESCE(qtyonhand,0) AS qtyonhand,
+          description,
+          fournisseur,
+          delai_livraison_jours
         FROM stock
         ORDER BY sku
-        """
-    )
-    df["reorder_point"] = pd.to_numeric(df["reorder_point"], errors="coerce").fillna(0.0)
-    df["qty_on_hand"]   = pd.to_numeric(df["qty_on_hand"], errors="coerce").fillna(0.0)
+    """)
+    df["reorderpoint"] = pd.to_numeric(df["reorderpoint"], errors="coerce").fillna(0.0)
+    df["qtyonhand"] = pd.to_numeric(df["qtyonhand"], errors="coerce").fillna(0.0)
+    df["delai_livraison_jours"] = pd.to_numeric(df["delai_livraison_jours"], errors="coerce").fillna(0).astype(int)
     return df
 
 
 def upsert_stock_row(row: Dict[str, Any]) -> None:
-    execute(
-        """
-        INSERT INTO stock (sku, name, unit, category, reorder_point, qty_on_hand, description)
-        VALUES (:sku, :name, :unit, :category, :reorder_point, :qty_on_hand, :description)
+    executesql("""
+        INSERT INTO stock (
+          sku, name, unit, category, reorderpoint, qtyonhand, description,
+          fournisseur, delai_livraison_jours
+        )
+        VALUES (
+          :sku, :name, :unit, :category, :reorderpoint, :qtyonhand, :description,
+          :fournisseur, :delai_livraison_jours
+        )
         ON CONFLICT (sku) DO UPDATE SET
           name = EXCLUDED.name,
           unit = EXCLUDED.unit,
           category = EXCLUDED.category,
-          reorder_point = EXCLUDED.reorder_point,
-          qty_on_hand = EXCLUDED.qty_on_hand,
-          description = EXCLUDED.description
-        """,
-        row,
-    )
-
+          reorderpoint = EXCLUDED.reorderpoint,
+          qtyonhand = EXCLUDED.qtyonhand,
+          description = EXCLUDED.description,
+          fournisseur = EXCLUDED.fournisseur,
+          delai_livraison_jours = EXCLUDED.delai_livraison_jours
+    """, row)
 
 def add_stock_item(sku: str, name: str, unit: str, category: str,
                    reorder_point: float, qty_on_hand: float, description: str | None):
@@ -381,7 +387,7 @@ with tab_dash:
 # ---- MOUVEMENTS (form + filtres + tableau)
 with tab_moves:
     st.header("Mouvements")
-    resplist = get_responsables() or ["Aymane", "Joslain", "Lise", "Robin"]
+    resplist = get_responsables()
     stock_df = get_stock()
 
     st.subheader("Ajouter un mouvement")
@@ -687,6 +693,8 @@ with tab_stock:
         qty_new = c6.number_input("QtyOnHand (initiale)", min_value=0.0, step=1.0, value=0.0)
         desc_new = st.text_input("Description", "")
         btn_add_stock = st.form_submit_button("Ajouter")
+        fourn = st.textinput("Fournisseur", value="")
+        delai = st.numberinput("Délai livraison (jours)", minvalue=0, step=1, value=0)
 
         if btn_add_stock:
             if not sku_new.strip() or not name_new.strip():
@@ -694,7 +702,7 @@ with tab_stock:
             else:
                 try:
                     add_stock_item(sku_new.strip(), name_new.strip(), unit_new.strip(),
-                                   cat_new.strip(), float(rop_new), float(qty_new), (desc_new or None))
+                                   cat_new.strip(), float(rop_new), float(qty_new), (desc_new or None), fourn.strip() or None, int(delai))
                     st.success(f"Article {sku_new} ajouté.")
                     st.toast("Article ajouté")
                 except Exception as e:
@@ -711,6 +719,8 @@ with tab_stock:
         column_config={
             "reorder_point": st.column_config.NumberColumn(step=1.0, min_value=0.0),
             "qty_on_hand": st.column_config.NumberColumn(step=1.0, min_value=0.0),
+            "fournisseur": st.column_config.TextColumn(),
+            "delai_livraison_jours": st.column_config.NumberColumn(step=1, min_value=0),
         },
         key="stock_editor",
     )
