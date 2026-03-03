@@ -127,16 +127,16 @@ def get_stock() -> pd.DataFrame:
     df = fetch_df("""
         SELECT
           sku, name, unit, category,
-          COALESCE(reorderpoint,0) AS reorderpoint,
-          COALESCE(qtyonhand,0) AS qtyonhand,
+          COALESCE(reorder_point,0) AS reorder_point,
+          COALESCE(qty_on_hand,0) AS qty_on_hand,
           description,
           fournisseur,
           delai_livraison_jours
         FROM stock
         ORDER BY sku
     """)
-    df["reorderpoint"] = pd.to_numeric(df["reorderpoint"], errors="coerce").fillna(0.0)
-    df["qtyonhand"] = pd.to_numeric(df["qtyonhand"], errors="coerce").fillna(0.0)
+    df["reorder_point"] = pd.to_numeric(df["reorder_point"], errors="coerce").fillna(0.0)
+    df["qty_on_hand"] = pd.to_numeric(df["qty_on_hand"], errors="coerce").fillna(0.0)
     df["delai_livraison_jours"] = pd.to_numeric(df["delai_livraison_jours"], errors="coerce").fillna(0).astype(int)
     return df
 
@@ -144,19 +144,19 @@ def get_stock() -> pd.DataFrame:
 def upsert_stock_row(row: Dict[str, Any]) -> None:
     execute("""
         INSERT INTO stock (
-          sku, name, unit, category, reorderpoint, qtyonhand, description,
+          sku, name, unit, category, reorder_point, qty_on_hand, description,
           fournisseur, delai_livraison_jours
         )
         VALUES (
-          :sku, :name, :unit, :category, :reorderpoint, :qtyonhand, :description,
+          :sku, :name, :unit, :category, :reorder_point, :qty_on_hand, :description,
           :fournisseur, :delai_livraison_jours
         )
         ON CONFLICT (sku) DO UPDATE SET
           name = EXCLUDED.name,
           unit = EXCLUDED.unit,
           category = EXCLUDED.category,
-          reorderpoint = EXCLUDED.reorderpoint,
-          qtyonhand = EXCLUDED.qtyonhand,
+          reorder_point = EXCLUDED.reorder_point,
+          qty_on_hand = EXCLUDED.qty_on_hand,
           description = EXCLUDED.description,
           fournisseur = EXCLUDED.fournisseur,
           delai_livraison_jours = EXCLUDED.delai_livraison_jours
