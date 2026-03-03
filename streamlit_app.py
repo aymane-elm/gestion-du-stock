@@ -142,7 +142,7 @@ def get_stock() -> pd.DataFrame:
 
 
 def upsert_stock_row(row: Dict[str, Any]) -> None:
-    executesql("""
+    execute("""
         INSERT INTO stock (
           sku, name, unit, category, reorderpoint, qtyonhand, description,
           fournisseur, delai_livraison_jours
