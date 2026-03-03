@@ -273,6 +273,8 @@ def get_bom(product: str) -> pd.DataFrame:
             "SELECT component_sku AS componentsku, qty_per_unit AS qtyperunit, description FROM bom_gmq_live")
     elif product == "Antenne":
         return fetch_df("SELECT component_sku AS componentsku, qty_per_unit AS qtyperunit, description FROM bom_antenne")
+    elif product in ("KT BTT", "KIT BATTERIE", "Kit Batterie"):
+        return fetch_df("SELECT component_sku AS componentsku, qty_per_unit AS qtyperunit, description FROM bom_kit_batterie")
     else:
         raise ValueError("Produit inconnu")
 
