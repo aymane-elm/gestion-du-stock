@@ -124,7 +124,7 @@ def delete_clients(ids: List[str]) -> int:
 # =========================
 
 def get_stock() -> pd.DataFrame:
-    df = fetchdf("""
+    df = fetch_df("""
         SELECT
           sku, name, unit, category,
           COALESCE(reorderpoint,0) AS reorderpoint,
