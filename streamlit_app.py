@@ -488,12 +488,12 @@ def get_qty_available(sku):
     hit = stock[stock["sku"] == sku]
     return float(hit.iloc[0]["qty_on_hand"]) if not hit.empty else 0.0
 
-def get_bom_table_for_accessory(sku):
-    table_map = {
-        "KT BTT": "bom_kit_batterie",
-        "RLNG": "bom_rallonge",
+def get_bom_table_for_accessory(sku: str) -> str | None:
+    sku = str(sku).strip().upper()
+    tablemap = {
+        "KIT BATTERIE": "bom_kit_batterie",
     }
-    return table_map.get(sku, f"bom_{sku.replace(' ', '_').lower()}")
+    return tablemap.get(sku)
 
 def generate_of_code():
     today_str = date.today().strftime("%Y%m%d")
@@ -501,23 +501,49 @@ def generate_of_code():
     return f"OF-{today_str}-{count+1:03d}"
 
 def check_accessory_availability(sku, qty, responsable, ref, due_date, client_id):
-    stock_qty = get_qty_available(sku)
-    if stock_qty >= qty:
-        return {"ok": True, "source": "stock", "message": f"{sku} en stock ({stock_qty}), retrait {qty} possible"}
-    try:
-        bom_table = get_bom_table_for_accessory(sku)
-        bom_acc = fetch_df(f"SELECT component_sku, qty_per_unit FROM {bom_table}")
-        missing = [
-            f"{row['component_sku']} (manque {float(row['qty_per_unit']) * qty - get_qty_available(row['component_sku'])})"
-            for _, row in bom_acc.iterrows() if get_qty_available(row['component_sku']) < float(row['qty_per_unit']) * qty
-        ]
-        if not missing:
-            sub_of_id = post_fabrication(sku, qty, due_date, f"SO-{ref}", responsable, client_id)
-            return {"ok": True, "source": "assembly", "message": f"Sous-OF {sku} créé (OF: {sub_of_id})"}
-        else:
-            return {"ok": False, "source": "missing", "message": f"Accessoire {sku} non assemblable. Composants manquants : {', '.join(missing)}"}
-    except Exception as e:
-        return {"ok": False, "source": "error", "message": f"Erreur BOM/sous-assemblage pour {sku} : {str(e)}"}
+    sku_norm = str(sku).strip().upper()
+    qty = float(qty or 0)
+
+    # 1) Kit Batterie -> vérifier composants BOM bom_kit_batterie (pas de check stock du kit)
+    if sku_norm in {"KT BTT", "KT BATTERIE"}:
+        bomtable = get_bom_table_for_accessory(sku_norm)  # "bom_kit_batterie"
+        if not bomtable:
+            return dict(ok=False, source="error",
+                        message=f"Aucune BOM configurée pour {sku_norm}")
+
+        bomacc = fetch_df(f"SELECT componentsku, qtyperunit FROM {bomtable}")
+        missing = []
+        for _, row in bomacc.iterrows():
+            comp = str(row["componentsku"]).strip()
+            need = float(row["qtyperunit"] or 0) * qty
+            avail = get_qty_available(comp)
+            if avail < need:
+                missing.append(f"{comp} (besoin {need}, dispo {avail})")
+
+        if missing:
+            return dict(ok=False, source="missing",
+                        message="Kit Batterie non assemblable: " + ", ".join(missing))
+
+        return dict(ok=True, source="assembly",
+                    message=f"Kit Batterie OK via BOM {bomtable} (composants disponibles)")
+
+    # 2) Rallonge -> vérifier directement SKU RALL dans stock
+    if sku_norm in {"RALL", "RLNG", "RALLONGE"}:
+        base_sku = "RALL"
+        avail = get_qty_available(base_sku)
+        if avail >= qty:
+            return dict(ok=True, source="stock",
+                        message=f"{base_sku} en stock ({avail}), retrait {qty} possible")
+        return dict(ok=False, source="missing",
+                    message=f"{base_sku} insuffisant (dispo {avail}, besoin {qty})")
+
+    # 3) Par défaut: logique actuelle stock direct
+    stockqty = get_qty_available(sku_norm)
+    if stockqty >= qty:
+        return dict(ok=True, source="stock",
+                    message=f"{sku_norm} en stock ({stockqty}), retrait {qty} possible")
+    return dict(ok=False, source="missing",
+                message=f"{sku_norm} insuffisant (dispo {stockqty}, besoin {qty})")
 
 with tab_mo:
     st.header("Ordres de fabrication")
