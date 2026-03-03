@@ -695,7 +695,7 @@ with tab_stock:
         desc_new = st.text_input("Description", "")
         btn_add_stock = st.form_submit_button("Ajouter")
         fourn = st.text_input("Fournisseur", value="")
-        delai = st.number_input("Délai livraison (jours)", minvalue=0, step=1, value=0)
+        delai = st.number_input("Délai livraison (jours)", min_value=0, step=1, value=0)
 
         if btn_add_stock:
             if not sku_new.strip() or not name_new.strip():
