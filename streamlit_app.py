@@ -162,6 +162,7 @@ def upsert_stock_row(row: Dict[str, Any]) -> None:
           delai_livraison_jours = EXCLUDED.delai_livraison_jours
     """, row)
 
+
 def add_stock_item(sku: str, name: str, unit: str, category: str,
                    reorder_point: float, qty_on_hand: float, description: str | None):
     upsert_stock_row({
