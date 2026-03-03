@@ -492,6 +492,7 @@ def get_bom_table_for_accessory(sku: str) -> str | None:
     sku = str(sku).strip().upper()
     tablemap = {
         "KIT BATTERIE": "bom_kit_batterie",
+        "KT BTT": "bom_kit_batterie",
     }
     return tablemap.get(sku)
 
@@ -505,27 +506,25 @@ def check_accessory_availability(sku, qty, responsable, ref, due_date, client_id
     qty = float(qty or 0)
 
     # 1) Kit Batterie -> vérifier composants BOM bom_kit_batterie (pas de check stock du kit)
-    if sku_norm in {"KT BTT", "KIT BATTERIE"}:
-        bomtable = get_bom_table_for_accessory(sku_norm)  # "bom_kit_batterie"
+    if sku_norm in ("KT BTT", "KIT BATTERIE"):
+        bomtable = get_bom_table_for_accessory(sku_norm)
         if not bomtable:
-            return dict(ok=False, source="error",
-                        message=f"Aucune BOM configurée pour {sku_norm}")
-
-        bomacc = fetch_df(f"SELECT component_sku, qty_per_unit FROM {bomtable}")
+            return dict(ok=False, source="error", message=f"Aucune BOM configurée pour {sku_norm}")
+    
+        bomacc = fetch_df(f"SELECT componentsku, qtyperunit FROM {bomtable}")
         missing = []
         for _, row in bomacc.iterrows():
-            comp = str(row["component_sku"]).strip()
-            need = float(row["qty_per_unit"] or 0) * qty
+            comp = str(row["componentsku"]).strip()
+            need = float(row["qtyperunit"] or 0) * qty
             avail = get_qty_available(comp)
             if avail < need:
                 missing.append(f"{comp} (besoin {need}, dispo {avail})")
-
+    
         if missing:
-            return dict(ok=False, source="missing",
-                        message="Kit Batterie non assemblable: " + ", ".join(missing))
+            return dict(ok=False, source="missing", message="Kit Batterie non assemblable: " + ", ".join(missing))
+    
+        return dict(ok=True, source="assembly", message=f"Kit Batterie OK via BOM {bomtable}")
 
-        return dict(ok=True, source="assembly",
-                    message=f"Kit Batterie OK via BOM {bomtable} (composants disponibles)")
 
     # 2) Rallonge -> vérifier directement SKU RALL dans stock
     if sku_norm in {"RALL", "RLNG", "RALLONGE"}:
