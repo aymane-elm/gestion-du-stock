@@ -505,7 +505,7 @@ def check_accessory_availability(sku, qty, responsable, ref, due_date, client_id
     qty = float(qty or 0)
 
     # 1) Kit Batterie -> vérifier composants BOM bom_kit_batterie (pas de check stock du kit)
-    if sku_norm in {"KT BTT", "KT BATTERIE"}:
+    if sku_norm in {"KT BTT", "KIT BATTERIE"}:
         bomtable = get_bom_table_for_accessory(sku_norm)  # "bom_kit_batterie"
         if not bomtable:
             return dict(ok=False, source="error",
