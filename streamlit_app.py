@@ -511,7 +511,7 @@ def check_accessory_availability(sku, qty, responsable, ref, due_date, client_id
             return dict(ok=False, source="error",
                         message=f"Aucune BOM configurée pour {sku_norm}")
 
-        bomacc = fetch_df(f"SELECT componentsku, qtyperunit FROM {bomtable}")
+        bomacc = fetch_df(f"SELECT component_sku, qty_per_unit FROM {bomtable}")
         missing = []
         for _, row in bomacc.iterrows():
             comp = str(row["component_sku"]).strip()
