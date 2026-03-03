@@ -694,8 +694,8 @@ with tab_stock:
         qty_new = c6.number_input("QtyOnHand (initiale)", min_value=0.0, step=1.0, value=0.0)
         desc_new = st.text_input("Description", "")
         btn_add_stock = st.form_submit_button("Ajouter")
-        fourn = st.textinput("Fournisseur", value="")
-        delai = st.numberinput("Délai livraison (jours)", minvalue=0, step=1, value=0)
+        fourn = st.text_input("Fournisseur", value="")
+        delai = st.number_input("Délai livraison (jours)", minvalue=0, step=1, value=0)
 
         if btn_add_stock:
             if not sku_new.strip() or not name_new.strip():
