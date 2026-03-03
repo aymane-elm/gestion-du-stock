@@ -514,8 +514,8 @@ def check_accessory_availability(sku, qty, responsable, ref, due_date, client_id
         bomacc = fetch_df(f"SELECT componentsku, qtyperunit FROM {bomtable}")
         missing = []
         for _, row in bomacc.iterrows():
-            comp = str(row["componentsku"]).strip()
-            need = float(row["qtyperunit"] or 0) * qty
+            comp = str(row["component_sku"]).strip()
+            need = float(row["qty_per_unit"] or 0) * qty
             avail = get_qty_available(comp)
             if avail < need:
                 missing.append(f"{comp} (besoin {need}, dispo {avail})")
